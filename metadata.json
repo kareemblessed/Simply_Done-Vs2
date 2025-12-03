@@ -1,0 +1,5 @@
+{
+  "name": "SimplyDone",
+  "description": "A streamlined, aesthetic to-do list application that runs entirely in your browser using local storage.",
+  "requestFramePermissions": []
+}
