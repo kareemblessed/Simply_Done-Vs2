@@ -21,8 +21,8 @@ Add subtask functionality to tasks so users can break down main tasks into small
 - Clicking a subtask toggles it
 - Progress updates correctly
 
-author_name: Ronan
-author_email: adamvickh@gmail.com
+author_name: kareemblessed
+author_email: blessedronan@gmail.com
 difficulty: medium
 category: Feature
 tags: react, typescript, subtasks
