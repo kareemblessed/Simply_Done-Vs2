@@ -7,25 +7,19 @@ RUN apk add --no-cache git
 # Set up the working directory
 WORKDIR /app
 
-# Copy ONLY specific files first
+# Copy package files first (for better caching)
 COPY package*.json ./
-COPY tsconfig.json ./
-COPY vite.config.ts ./
 
 # Install dependencies
-RUN npm ci
+RUN npm install
 
-# Copy the rest
-COPY src ./src
-COPY tasks ./tasks
-COPY run_tests.sh ./
-COPY index.html ./
-COPY index.tsx ./
+# Copy all project files
+COPY . .
 
-# Build the app
+# Build the app with Vite
 RUN npm run build
 
-# Make test runner executable
+# Make the test runner script executable (BEFORE switching user)
 RUN chmod +x run_tests.sh
 
 # Create a non-root user for security
