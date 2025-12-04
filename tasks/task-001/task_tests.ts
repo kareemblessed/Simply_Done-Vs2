@@ -42,30 +42,37 @@ test('Test 2: toggleSubtask method exists', () => {
 test('Test 3: Toggle changes subtask status', () => {
   const task = taskService.create({ text: 'Main', priority: Priority.MEDIUM });
   
-  // FIX: Use update to persist subtasks to the DB so toggleSubtask can find them
-  taskService.update(task.id, {
+  // Update task with a subtask
+  const updatedTask = taskService.update(task.id, {
     subtasks: [{ id: 's1', text: 'Sub', isCompleted: false }]
   });
 
-  const updated = taskService.toggleSubtask(task.id, 's1');
+  if (!updatedTask) throw new Error('Setup failed: Could not add subtask');
+  if (updatedTask.subtasks.length !== 1) throw new Error('Setup failed: Subtask not saved');
+
+  // Toggle it
+  const toggled = taskService.toggleSubtask(task.id, 's1');
   
-  if (!updated) throw new Error('Returned null');
-  if (updated.subtasks[0].isCompleted !== true) throw new Error('Toggle failed: expected true, got ' + updated.subtasks[0].isCompleted);
+  if (!toggled) throw new Error('Returned null');
+  if (toggled.subtasks[0].isCompleted !== true) throw new Error('Toggle failed: expected true, got ' + toggled.subtasks[0].isCompleted);
 });
 
 // Test 4: Toggle works both ways
 test('Test 4: Toggle works true to false', () => {
   const task = taskService.create({ text: 'Test', priority: Priority.HIGH });
   
-  // FIX: Use update to persist subtasks to the DB
-  taskService.update(task.id, {
+  // Update task with a completed subtask
+  const updatedTask = taskService.update(task.id, {
     subtasks: [{ id: 's1', text: 'Sub', isCompleted: true }]
   });
 
-  const updated = taskService.toggleSubtask(task.id, 's1');
+  if (!updatedTask) throw new Error('Setup failed: Could not add subtask');
+
+  // Toggle it
+  const toggled = taskService.toggleSubtask(task.id, 's1');
   
-  if (!updated) throw new Error('Returned null');
-  if (updated.subtasks[0].isCompleted !== false) throw new Error('Reverse toggle failed: expected false, got ' + updated.subtasks[0].isCompleted);
+  if (!toggled) throw new Error('Returned null');
+  if (toggled.subtasks[0].isCompleted !== false) throw new Error('Reverse toggle failed: expected false, got ' + toggled.subtasks[0].isCompleted);
 });
 
 // Test 5: Invalid task returns null
