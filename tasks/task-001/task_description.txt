@@ -1,29 +1,29 @@
-## task_description:
-
+task_description:
 task-001
 
-Add subtask functionality to tasks so users can break down main tasks into smaller steps.
+task:
+Add subtask functionality to tasks
 
-# Requirements:
-- Create SubTask type with id, text, isCompleted
-- Add subtasks array to Task type
-- Initialise new tasks with empty subtasks in taskService
-- Add toggleSubtask(taskId, subtaskId) to taskService
-- Expose toggleSubtask in TaskController
-- Add toggleSubtask to apiService
-- Show subtask progress in TaskItem (e.g., "2/4 subtasks")
-- Render subtasks under each task
-- Make subtasks clickable to toggle
+instructions:
+1. Update Task interface to include subtasks array
+2. Create SubTask interface
+3. Add toggleSubtask method to taskService
+4. Update UI to show subtasks
+5. Add progress tracking
 
-# Success Criteria:
-- New tasks have empty subtasks
-- Existing tasks load fine
-- Clicking a subtask toggles it
-- Progress updates correctly
+requirements:
+- Subtasks stored in Task object
+- Each subtask has id, text, isCompleted
+- Can toggle subtask completion
+
+success_criteria:
+- All 6 tests pass
+- Subtasks display correctly
+- Progress updates on toggle
 
 author_name: kareemblessed
 author_email: blessedronan@gmail.com
 difficulty: medium
 category: Feature
 tags: react, typescript, subtasks
-parser_name: node.SO
+parser_name: node
