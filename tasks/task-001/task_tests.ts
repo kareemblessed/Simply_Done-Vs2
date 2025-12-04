@@ -1,5 +1,8 @@
-const { taskService } = require('../../../src/server/services/taskService');
-const { Priority } = require('../../../src/shared/types/task.types');
+
+import { taskService } from '../../src/server/services/taskService';
+import { Priority } from '../../src/shared/types/task.types';
+
+// ... rest stays the same
 
 let passCount = 0;
 let failCount = 0;
@@ -50,7 +53,7 @@ test('Test 5: Invalid task ID returns null', () => {
   if (result !== null) throw new Error('Should return null');
 });
 
-// Test 6: Invalid subtask ID returns null
+// Test 6: Invalid subtask returns null
 test('Test 6: Invalid subtask ID returns null', () => {
   const task = taskService.create({ text: 'Test', priority: Priority.LOW });
   const result = taskService.toggleSubtask(task.id, 'fake-sub');
