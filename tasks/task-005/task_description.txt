@@ -1,0 +1,28 @@
+
+task_description:
+task-005
+Implement advanced task filtering with complex query composition, allowing users to chain multiple filter conditions with AND/OR logic operators and persist filter presets.
+
+requirements:
+- Create FilterQuery type with conditions array
+- Add FilterCondition type supporting field, operator, value
+- Create filterService with buildQuery and executeQuery
+- Implement FilterPreset persistence in jsonDatabase
+- Add taskService.filterTasksByQuery method chaining
+- Create FilterComposer component with operator selection
+
+Success_criteria:
+- All 6 tests pass
+- Users can chain multiple filter conditions
+- AND/OR logic operators work correctly
+- Filter presets save and load from storage
+- Complex queries execute without performance issues
+- Filtering respects all task properties
+- Query state persists across session reloads
+
+author_name: kareemblessed
+author_email: blessedronan@gmail.com
+difficulty: hard
+category: Feature
+tags: react, typescript, filtering, query-engine
+parser_name: node
