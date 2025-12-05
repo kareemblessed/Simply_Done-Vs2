@@ -44,7 +44,6 @@ export const ReminderManager: React.FC<ReminderManagerProps> = ({ reminders, onC
         </div>
 
         <div className="p-6 space-y-6">
-          {/* Create Form */}
           <form onSubmit={handleSubmit} className="space-y-4">
             <input
               type="text"
@@ -70,7 +69,6 @@ export const ReminderManager: React.FC<ReminderManagerProps> = ({ reminders, onC
             </button>
           </form>
 
-          {/* List */}
           <div className="space-y-2 max-h-60 overflow-y-auto pr-2">
             {reminders.length === 0 ? (
               <p className="text-center text-slate-400 text-sm py-4">No reminders set.</p>
