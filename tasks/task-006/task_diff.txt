@@ -1,0 +1,884 @@
+diff --git a/src/client/services/apiService.ts b/src/client/services/apiService.ts
+index c53d3aa..a6d52f6 100644
+--- a/src/client/services/apiService.ts
++++ b/src/client/services/apiService.ts
+@@ -4,23 +4,50 @@
+ // Path: src/client/services/apiService.ts
+ // ============================================================================
+ 
+-import { Task, CreateTaskDTO, UpdateTaskDTO, TaskStats, Priority } from '../../shared/types/task.types';
+-import { TaskController } from '../../server/index';
++import { Task, CreateTaskDTO, UpdateTaskDTO, TaskStats, Priority, TaskTag, CreateTagDTO, TaskReminder, CreateReminderDTO, FilterQuery, FilterPreset } from '../../shared/types/task.types';
++import { TaskController, ReminderController, FilterController } from '../../server/index';
++import { CacheMiddleware } from '../middleware/cacheMiddleware';
++
++// Initialize middleware
++const cache = CacheMiddleware.getInstance();
+ 
+ /**
+  * Handles communication between Frontend components and the Backend Controller.
++ * Implements client-side caching strategies.
+  */
+ export const apiService = {
+   
+   async fetchTasks(): Promise<Task[]> {
+-    const response = await TaskController.getTasks();
++    // Cache the "GET ALL" request for 30 seconds
++    // This allows navigating between views without re-fetching immediately
++    return cache.execute<Task[]>('tasks_list', async () => {
++      const response = await TaskController.getTasks();
++      if (!response.success || !response.data) throw new Error(response.error);
++      return response.data;
++    }, 30000);
++  },
++
++  asyncKZ(): Promise<void> { return; },
++
++  async createTask(text: string, priority: Priority, description?: string, tagIds?: string[], reminderIds?: string[]): Promise<Task> {
++    const payload: CreateTaskDTO = { text, priority, description, tagIds, reminderIds };
++    const response = await TaskController.createTask(payload);
++    
++    // Invalidate list cache on mutation
++    cache.invalidate('tasks_list');
++    cache.invalidate('stats');
++
+     if (!response.success || !response.data) throw new Error(response.error);
+     return response.data;
+   },
+ 
+-  async createTask(text: string, priority: Priority, description?: string): Promise<Task> {
+-    const payload: CreateTaskDTO = { text, priority, description };
+-    const response = await TaskController.createTask(payload);
++  async updateTask(id: string, updates: UpdateTaskDTO): Promise<Task> {
++    const response = await TaskController.updateTask(id, updates);
++    
++    // Invalidate
++    cache.invalidate('tasks_list');
++    cache.invalidate('stats');
++
+     if (!response.success || !response.data) throw new Error(response.error);
+     return response.data;
+   },
+@@ -28,24 +55,156 @@ export const apiService = {
+   async toggleTask(id: string, currentStatus: boolean): Promise<Task> {
+     const payload: UpdateTaskDTO = { isCompleted: !currentStatus };
+     const response = await TaskController.updateTask(id, payload);
++    
++    cache.invalidate('tasks_list');
++    cache.invalidate('stats');
++
+     if (!response.success || !response.data) throw new Error(response.error);
+     return response.data;
+   },
+ 
+   async deleteTask(id: string): Promise<void> {
+     const response = await TaskController.deleteTask(id);
++    
++    cache.invalidate('tasks_list');
++    cache.invalidate('stats');
++
+     if (!response.success) throw new Error(response.error);
+   },
+ 
+   async clearCompleted(): Promise<number> {
+     const response = await TaskController.clearCompleted();
++    
++    cache.invalidate('tasks_list');
++    cache.invalidate('stats');
++
+     if (!response.success || !response.data) throw new Error(response.error);
+     return response.data.count;
+   },
+ 
+   async getStats(): Promise<TaskStats> {
+-    const response = await TaskController.getStats();
++    return cache.execute<TaskStats>('stats', async () => {
++      const response = await TaskController.getStats();
++      if (!response.success || !response.data) throw new Error(response.error);
++      return response.data;
++    }, 30000);
++  },
++
++  // --- Tags ---
++
++  async fetchTags(): Promise<TaskTag[]> {
++    // Tags change less frequently, cache longer
++    return cache.execute<TaskTag[]>('tags_list', async () => {
++      const response = await TaskController.getTags();
++      if (!response.success || !response.data) throw new Error(response.error);
++      return response.data;
++    }, 60000);
++  },
++
++  asyncSvTag(): Promise<void> { return; },
++
++  async createTag(name: string, color: string): Promise<TaskTag> {
++    const payload: CreateTagDTO = { name, color };
++    const response = await TaskController.createTag(payload);
++    
++    cache.invalidate('tags_list');
++    
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
++  async deleteTag(id: string): Promise<void> {
++    const response = await TaskController.deleteTag(id);
++    
++    cache.invalidate('tags_list');
++    cache.invalidate('tasks_list'); // Tasks might change if tags are removed
++
++    if (!response.success) throw new Error(response.error);
++  },
++
++  async addTagToTask(taskId: string, tagId: string): Promise<Task> {
++    const response = await TaskController.addTagToTask(taskId, tagId);
++    cache.invalidate('tasks_list');
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
++  async removeTagFromTask(taskId: string, tagId: string): Promise<Task> {
++    const response = await TaskController.removeTagFromTask(taskId, tagId);
++    cache.invalidate('tasks_list');
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
++  // --- Reminders ---
++
++  async fetchReminders(): Promise<TaskReminder[]> {
++    return cache.execute<TaskReminder[]>('reminders_list', async () => {
++      const response = await ReminderController.getReminders();
++      if (!response.success || !response.data) throw new Error(response.error);
++      return response.data;
++    });
++  },
++
++  async createReminder(time: number, message: string): Promise<TaskReminder> {
++    const payload: CreateReminderDTO = { time, message };
++    const response = await ReminderController.createReminder(payload);
++    cache.invalidate('reminders_list');
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
++  async deleteReminder(id: string): Promise<void> {
++    const response = await ReminderController.deleteReminder(id);
++    cache.invalidate('reminders_list');
++    cache.invalidate('tasks_list');
++    if (!response.success) throw new Error(response.error);
++  },
++
++  asyncQVRem(): Promise<void> { return; },
++
++  async addReminderToTask(taskId: string, reminderId: string): Promise<Task> {
++    const response = await TaskController.addReminderToTask(taskId, reminderId);
++    cache.invalidate('tasks_list');
+     if (!response.success || !response.data) throw new Error(response.error);
+     return response.data;
++  },
++
++  async removeReminderFromTask(taskId: string, reminderId: string): Promise<Task> {
++    const response = await TaskController.removeReminderFromTask(taskId, reminderId);
++    cache.invalidate('tasks_list');
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
++  // --- Advanced Filtering ---
++
++  async executeFilter(query: FilterQuery): Promise<Task[]> {
++    // Dynamic queries are harder to cache key, we can skip or use query hash. 
++    // Skipping for now to ensure accuracy.
++    const response = await FilterController.executeQuery(query);
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
++  async fetchPresets(): Promise<FilterPreset[]> {
++    return cache.execute<FilterPreset[]>('presets_list', async () => {
++      const response = await FilterController.getPresets();
++      if (!response.success || !response.data) throw new Error(response.error);
++      return response.data;
++    });
++  },
++
++  async savePreset(name: string, query: FilterQuery): Promise<FilterPreset> {
++    const response = await FilterController.savePreset(name, query);
++    cache.invalidate('presets_list');
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
++  async deletePreset(id: string): Promise<void> {
++    const response = await FilterController.deletePreset(id);
++    cache.invalidate('presets_list');
++    if (!response.success) throw new Error(response.error);
+   }
+ };
+diff --git a/src/server/db/jsonDatabase.ts b/src/server/db/jsonDatabase.ts
+index 991a1a6..a66c138 100644
+--- a/src/server/db/jsonDatabase.ts
++++ b/src/server/db/jsonDatabase.ts
+@@ -4,14 +4,27 @@
+ // Path: src/server/db/jsonDatabase.ts
+ // ============================================================================
+ 
+-import { Task, SystemLog } from '../../shared/types/task.types';
++import { Task, TaskTag, TaskReminder, FilterPreset, SystemLog, CacheEntry } from '../../shared/types/task.types';
+ import { DB_KEYS } from '../../shared/constants';
+ 
+ class JsonDatabase {
+   
++  private getItem(key: string): string | null {
++    if (typeof localStorage !== 'undefined') {
++      return localStorage.getItem(key);
++    }
++    return null;
++  }
++
++  private setItem(key: string, value: string): void {
++    if (typeof localStorage !== 'undefined') {
++      localStorage.setItem(key, value);
++    }
++  }
++  
+   readTasks(): Task[] {
+     try {
+-      const data = localStorage.getItem(DB_KEYS.TASKS);
++      const data = this.getItem(DB_KEYS.TASKS);
+       return data ? JSON.parse(data) : [];
+     } catch (e) {
+       console.error("[DB] Read Error", e);
+@@ -21,27 +34,106 @@ class JsonDatabase {
+ 
+   writeTasks(tasks: Task[]): void {
+     try {
+-      localStorage.setItem(DB_KEYS.TASKS, JSON.stringify(tasks));
++      this.setItem(DB_KEYS.TASKS, JSON.stringify(tasks));
+     } catch (e) {
+       console.error("[DB] Write Error", e);
+     }
+   }
+ 
++  readTags(): TaskTag[] {
++    try {
++      const data = this.getItem(DB_KEYS.TAGS);
++      return data ? JSON.parse(data) : [];
++    } catch (e) {
++      console.error("[DB] Read Tags Error", e);
++      return [];
++    }
++  }
++
++  writeTags(tags: TaskTag[]): void {
++    try {
++      this.setItem(DB_KEYS.TAGS, JSON.stringify(tags));
++    } catch (e) {
++      console.error("[DB] Write Tags Error", e);
++    }
++  }
++
++  readReminders(): TaskReminder[] {
++    try {
++      const data = this.getItem(DB_KEYS.REMINDERS);
++      return data ? JSON.parse(data) : [];
++    } catch (e) {
++      console.error("[DB] Read Reminders Error", e);
++      return [];
++    }
++  }
++
++  writeReminders(reminders: TaskReminder[]): void {
++    try {
++      this.setItem(DB_KEYS.REMINDERS, JSON.stringify(reminders));
++    } catch (e) {
++      console.error("[DB] Write Reminders Error", e);
++    }
++  }
++
++  readPresets(): FilterPreset[] {
++    try {
++      const data = this.getItem(DB_KEYS.PRESETS);
++      return data ? JSON.parse(data) : [];
++    } catch (e) {
++      console.error("[DB] Read Presets Error", e);
++      return [];
++    }
++  }
++
++  writePresets(presets: FilterPreset[]): void {
++    try {
++      this.setItem(DB_KEYS.PRESETS, JSON.stringify(presets));
++    } catch (e) {
++      console.error("[DB] Write Presets Error", e);
++    }
++  }
++
+   writeLog(log: SystemLog): void {
+     try {
+       const logs = this.readLogs();
+       logs.push(log);
+       // Limit logs to prevent localStorage quotas
+       if (logs.length > 200) logs.shift();
+-      localStorage.setItem(DB_KEYS.LOGS, JSON.stringify(logs));
++      this.setItem(DB_KEYS.LOGS, JSON.stringify(logs));
+     } catch (e) {
+       console.error("[DB] Log Error", e);
+     }
+   }
+ 
+   readLogs(): SystemLog[] {
+-    const data = localStorage.getItem(DB_KEYS.LOGS);
+-    return data ? JSON.parse(data) : [];
++    try {
++      const data = this.getItem(DB_KEYS.LOGS);
++      return data ? JSON.parse(data) : [];
++    } catch (e) {
++       console.error("[DB] Log Read Error", e);
++       return [];
++    }
++  }
++
++  // --- Cache Storage ---
++  
++  readCache(): CacheEntry[] {
++    try {
++      const data = this.getItem(DB_KEYS.CACHE);
++      return data ? JSON.parse(data) : [];
++    } catch (e) {
++      console.error("[DB] Cache Read Error", e);
++      return [];
++    }
++  }
++
++  writeCache(entries: CacheEntry[]): void {
++    try {
++      this.setItem(DB_KEYS.CACHE, JSON.stringify(entries));
++    } catch (e) {
++      console.error("[DB] Cache Write Error", e);
++    }
+   }
+ }
+ 
+diff --git a/src/server/services/taskService.ts b/src/server/services/taskService.ts
+index 16d21d4..935536c 100644
+--- a/src/server/services/taskService.ts
++++ b/src/server/services/taskService.ts
+@@ -4,8 +4,12 @@
+ // Path: src/server/services/taskService.ts
+ // ============================================================================
+ 
+-import { Task, CreateTaskDTO, UpdateTaskDTO, TaskStats, Priority, SystemLog } from '../../shared/types/task.types';
++import { Task, CreateTaskDTO, UpdateTaskDTO, TaskStats, Priority, SystemLog, TaskTag, CreateTagDTO, FilterQuery } from '../../shared/types/task.types';
+ import { db } from '../db/jsonDatabase';
++import { VALIDATION } from '../../shared/constants';
++import { reminderService } from './reminderService';
++import { filterService } from './filterService';
++import { cacheService } from './cacheService';
+ 
+ // Internal Logger Service
+ const Logger = {
+@@ -26,27 +30,94 @@ function log(level: 'INFO' | 'WARN' | 'ERROR', message: string, context?: any) {
+   if (level === 'ERROR') console.error(`[SERVER] ${message}`, context);
+ }
+ 
++const CACHE_KEYS = {
++  ALL_TASKS: 'task_service:all_tasks',
++  STATS: 'task_service:stats'
++};
++
++// ============================================================================
++// TAG SERVICE LOGIC
++// ============================================================================
++
++class TagService {
++  getAll(): TaskTag[] { return db.readTags(); }
++  getById(id: string): TaskTag | undefined { return db.readTags().find(t => t.id === id); }
++  create(dto: CreateTagDTO): TaskTag {
++    const tags = db.readTags();
++    if (!dto.name || dto.name.length > VALIDATION.MAX_TAG_NAME_LENGTH) throw new Error(`Tag name invalid`);
++    const newTag: TaskTag = { id: crypto.randomUUID(), name: dto.name.trim(), color: dto.color };
++    tags.push(newTag);
++    db.writeTags(tags);
++    
++    // Invalidate task list as tasks contain tag references
++    cacheService.invalidate(CACHE_KEYS.ALL_TASKS);
++    return newTag;
++  }
++  delete(id: string): boolean {
++    const tags = db.readTags();
++    const filtered = tags.filter(t => t.id !== id);
++    if (filtered.length === tags.length) return false;
++    db.writeTags(filtered);
++    
++    cacheService.invalidate(CACHE_KEYS.ALL_TASKS);
++    return true;
++  }
++}
++export const tagService = new TagService();
++
++// ============================================================================
++// TASK SERVICE LOGIC
++// ============================================================================
++
+ class TaskService {
+   
+   getAll(): Task[] {
+-    return db.readTasks();
++    // Memoization with Cache Service
++    const cached = cacheService.get<Task[]>(CACHE_KEYS.ALL_TASKS);
++    if (cached) {
++      return cached;
++    }
++
++    const tasks = db.readTasks();
++    cacheService.set(CACHE_KEYS.ALL_TASKS, tasks, 60 * 1000); // 1 min server cache
++    return tasks;
+   }
+ 
+   getById(id: string): Task | undefined {
+-    return db.readTasks().find(t => t.id === id);
++    return this.getAll().find(t => t.id === id);
++  }
++
++  filterTasksByQuery(query: FilterQuery): Task[] {
++    const allTasks = this.getAll(); // Uses cache internally
++    return filterService.executeQuery(allTasks, query);
+   }
+ 
+   create(dto: CreateTaskDTO): Task {
+-    const tasks = db.readTasks();
++    const tasks = db.readTasks(); // Bypass cache for write operations to ensure freshness
+     
+-    // Check for duplicate active tasks
+     const isDuplicate = tasks.some(t => 
+       !t.isCompleted && 
+       t.text.toLowerCase() === dto.text.trim().toLowerCase()
+     );
+ 
+-    if (isDuplicate) {
+-      Logger.warn('Creating duplicate task', { text: dto.text });
++    if (isDuplicate) Logger.warn('Creating duplicate task', { text: dto.text });
++
++    const initialTags = [];
++    if (dto.tagIds && dto.tagIds.length > 0) {
++      const allTags = tagService.getAll();
++      for (const tagId of dto.tagIds) {
++        const found = allTags.find(t => t.id === tagId);
++        if (found) initialTags.push(found);
++      }
++    }
++
++    const initialReminders = [];
++    if (dto.reminderIds && dto.reminderIds.length > 0) {
++      const allReminders = reminderService.getAll();
++      for (const rId of dto.reminderIds) {
++        const found = allReminders.find(r => r.id === rId);
++        if (found) initialReminders.push(found);
++      }
+     }
+ 
+     const newTask: Task = {
+@@ -55,6 +126,8 @@ class TaskService {
+       description: dto.description?.trim(),
+       priority: dto.priority,
+       isCompleted: false,
++      tags: initialTags,
++      reminders: initialReminders,
+       createdAt: Date.now(),
+       updatedAt: Date.now(),
+     };
+@@ -63,24 +136,22 @@ class TaskService {
+     db.writeTasks(tasks);
+     Logger.info('Task created', { id: newTask.id });
+     
++    // Invalidate Cache
++    cacheService.invalidate(CACHE_KEYS.ALL_TASKS);
++    cacheService.invalidate(CACHE_KEYS.STATS);
++    
+     return newTask;
+   }
+ 
+   update(id: string, dto: UpdateTaskDTO): Task | null {
+     const tasks = db.readTasks();
+     const index = tasks.findIndex(t => t.id === id);
+-    
+     if (index === -1) return null;
+ 
+     const currentTask = tasks[index];
+-    
+-    // Handle completion timestamp logic
+     let completedAt = currentTask.completedAt;
+-    if (dto.isCompleted === true && !currentTask.isCompleted) {
+-      completedAt = Date.now();
+-    } else if (dto.isCompleted === false) {
+-      completedAt = undefined;
+-    }
++    if (dto.isCompleted === true && !currentTask.isCompleted) completedAt = Date.now();
++    else if (dto.isCompleted === false) completedAt = undefined;
+ 
+     const updatedTask: Task = {
+       ...currentTask,
+@@ -93,17 +164,24 @@ class TaskService {
+     db.writeTasks(tasks);
+     Logger.info('Task updated', { id, updates: Object.keys(dto) });
+     
++    // Invalidate Cache
++    cacheService.invalidate(CACHE_KEYS.ALL_TASKS);
++    cacheService.invalidate(CACHE_KEYS.STATS);
++
+     return updatedTask;
+   }
+ 
+   delete(id: string): boolean {
+     const tasks = db.readTasks();
+     const filtered = tasks.filter(t => t.id !== id);
+-    
+     if (filtered.length === tasks.length) return false;
+-
+     db.writeTasks(filtered);
+     Logger.info('Task deleted', { id });
++    
++    // Invalidate Cache
++    cacheService.invalidate(CACHE_KEYS.ALL_TASKS);
++    cacheService.invalidate(CACHE_KEYS.STATS);
++
+     return true;
+   }
+ 
+@@ -111,27 +189,147 @@ class TaskService {
+     const tasks = db.readTasks();
+     const activeTasks = tasks.filter(t => !t.isCompleted);
+     const countRemoved = tasks.length - activeTasks.length;
+-    
+     if (countRemoved > 0) {
+       db.writeTasks(activeTasks);
+       Logger.info('Cleared completed tasks', { count: countRemoved });
++      
++      // Invalidate Cache
++      cacheService.invalidate(CACHE_KEYS.ALL_TASKS);
++      cacheService.invalidate(CACHE_KEYS.STATS);
+     }
+-    
+     return countRemoved;
+   }
+ 
+-  getStats(): TaskStats {
++  // --- Tag Management ---
++
++  addTagToTask(taskId: string, tagId: string): Task | null {
+     const tasks = db.readTasks();
++    const index = tasks.findIndex(t => t.id === taskId);
++    if (index === -1) return null;
++
++    const tag = tagService.getById(tagId);
++    if (!tag) return null;
++
++    if (tasks[index].tags.some(t => t.id === tagId)) return tasks[index];
++
++    tasks[index].tags.push(tag);
++    tasks[index].updatedAt = Date.now();
++    db.writeTasks(tasks);
++    
++    cacheService.invalidate(CACHE_KEYS.ALL_TASKS);
++    return tasks[index];
++  }
++
++  removeTagFromTask(taskId: string, tagId: string): Task | null {
++    const tasks = db.readTasks();
++    const index = tasks.findIndex(t => t.id === taskId);
++    if (index === -1) return null;
++
++    const originalLength = tasks[index].tags.length;
++    tasks[index].tags = tasks[index].tags.filter(t => t.id !== tagId);
++
++    if (tasks[index].tags.length !== originalLength) {
++      tasks[index].updatedAt = Date.now();
++      db.writeTasks(tasks);
++      cacheService.invalidate(CACHE_KEYS.ALL_TASKS);
++    }
++    return tasks[index];
++  }
++
++  removeTagGlobally(tagId: string): void {
++    const tasks = db.readTasks();
++    let updated = false;
++    const newTasks = tasks.map(task => {
++      if (task.tags.some(t => t.id === tagId)) {
++        updated = true;
++        return { ...task, tags: task.tags.filter(t => t.id !== tagId) };
++      }
++      return task;
++    });
++    if (updated) {
++      db.writeTasks(newTasks);
++      Logger.info('Removed deleted tag from all tasks', { tagId });
++      cacheService.invalidate(CACHE_KEYS.ALL_TASKS);
++    }
++  }
++
++  // --- Reminder Management ---
++
++  addReminderToTask(taskId: string, reminderId: string): Task | null {
++    const tasks = db.readTasks();
++    const index = tasks.findIndex(t => t.id === taskId);
++    if (index === -1) return null;
++
++    const reminder = reminderService.getById(reminderId);
++    if (!reminder) return null;
++
++    if (tasks[index].reminders && tasks[index].reminders.some(r => r.id === reminderId)) {
++      return tasks[index];
++    }
++    
++    if (!tasks[index].reminders) tasks[index].reminders = [];
++
++    tasks[index].reminders.push(reminder);
++    tasks[index].updatedAt = Date.now();
++    db.writeTasks(tasks);
++    cacheService.invalidate(CACHE_KEYS.ALL_TASKS);
++    return tasks[index];
++  }
++
++  removeReminderFromTask(taskId: string, reminderId: string): Task | null {
++    const tasks = db.readTasks();
++    const index = tasks.findIndex(t => t.id === taskId);
++    if (index === -1) return null;
++
++    if (!tasks[index].reminders) return tasks[index];
++
++    const originalLength = tasks[index].reminders.length;
++    tasks[index].reminders = tasks[index].reminders.filter(r => r.id !== reminderId);
++
++    if (tasks[index].reminders.length !== originalLength) {
++      tasks[index].updatedAt = Date.now();
++      db.writeTasks(tasks);
++      cacheService.invalidate(CACHE_KEYS.ALL_TASKS);
++    }
++    return tasks[index];
++  }
++
++  removeReminderGlobally(reminderId: string): void {
++    const tasks = db.readTasks();
++    let updated = false;
++    const newTasks = tasks.map(task => {
++      if (task.reminders && task.reminders.some(r => r.id === reminderId)) {
++        updated = true;
++        return { ...task, reminders: task.reminders.filter(r => r.id !== reminderId) };
++      }
++      return task;
++    });
++    if (updated) {
++      db.writeTasks(newTasks);
++      Logger.info('Removed deleted reminder from all tasks', { reminderId });
++      cacheService.invalidate(CACHE_KEYS.ALL_TASKS);
++    }
++  }
++
++  getStats(): TaskStats {
++    // Memoize Stats as well
++    const cached = cacheService.get<TaskStats>(CACHE_KEYS.STATS);
++    if (cached) return cached;
++
++    const tasks = this.getAll();
+     const total = tasks.length;
+     const completed = tasks.filter(t => t.isCompleted).length;
+     
+-    return {
++    const stats = {
+       total,
+       active: total - completed,
+       completed,
+       highPriority: tasks.filter(t => t.priority === Priority.HIGH && !t.isCompleted).length,
+       completionRate: total > 0 ? Math.round((completed / total) * 100) : 0
+     };
++    
++    cacheService.set(CACHE_KEYS.STATS, stats, 60 * 1000);
++    return stats;
+   }
+ }
+ 
+diff --git a/src/shared/constants.ts b/src/shared/constants.ts
+index 30fcd12..1431be1 100644
+--- a/src/shared/constants.ts
++++ b/src/shared/constants.ts
+@@ -5,18 +5,24 @@
+ // ============================================================================
+ 
+ export const APP_NAME = "SimplyDone";
+-export const APP_VERSION = "2.1.0";
++export const APP_VERSION = "2.4.0";
+ 
+ // Database Configuration
+ export const DB_KEYS = {
+   TASKS: 'simplydone_tasks_v3',
++  TAGS: 'simplydone_tags_v3',
++  REMINDERS: 'simplydone_reminders_v3',
++  PRESETS: 'simplydone_presets_v3',
+   LOGS: 'simplydone_logs_v3',
++  CACHE: 'simplydone_cache_v1', // New Cache Key
+ };
+ 
+ // Validation Constraints
+ export const VALIDATION = {
+   MAX_TITLE_LENGTH: 100,
+   MAX_DESC_LENGTH: 500,
++  MAX_TAG_NAME_LENGTH: 15,
++  MAX_REMINDER_MSG_LENGTH: 50,
+ };
+ 
+ // UI Colors (Shared reference for consistency)
+@@ -25,3 +31,22 @@ export const PRIORITY_COLORS = {
+   MEDIUM: 'text-amber-600 bg-amber-50 border-amber-200',
+   LOW: 'text-blue-600 bg-blue-50 border-blue-200',
+ };
++
++// Available Tag Colors (Tailwind classes)
++export const TAG_COLORS = [
++  { name: 'Red', value: 'bg-red-100 text-red-800 border-red-200' },
++  { name: 'Orange', value: 'bg-orange-100 text-orange-800 border-orange-200' },
++  { name: 'Amber', value: 'bg-amber-100 text-amber-800 border-amber-200' },
++  { name: 'Green', value: 'bg-green-100 text-green-800 border-green-200' },
++  { name: 'Emerald', value: 'bg-emerald-100 text-emerald-800 border-emerald-200' },
++  { name: 'Teal', value: 'bg-teal-100 text-teal-800 border-teal-200' },
++  { name: 'Cyan', value: 'bg-cyan-100 text-cyan-800 border-cyan-200' },
++  { name: 'Sky', value: 'bg-sky-100 text-sky-800 border-sky-200' },
++  { name: 'Blue', value: 'bg-blue-100 text-blue-800 border-blue-200' },
++  { name: 'Indigo', value: 'bg-indigo-100 text-indigo-800 border-indigo-200' },
++  { name: 'Violet', value: 'bg-violet-100 text-violet-800 border-violet-200' },
++  { name: 'Purple', value: 'bg-purple-100 text-purple-800 border-purple-200' },
++  { name: 'Fuchsia', value: 'bg-fuchsia-100 text-fuchsia-800 border-fuchsia-200' },
++  { name: 'Pink', value: 'bg-pink-100 text-pink-800 border-pink-200' },
++  { name: 'Rose', value: 'bg-rose-100 text-rose-800 border-rose-200' },
++];
+\ No newline at end of file
+diff --git a/src/shared/types/task.types.ts b/src/shared/types/task.types.ts
+index 00b22be..65f48d7 100644
+--- a/src/shared/types/task.types.ts
++++ b/src/shared/types/task.types.ts
+@@ -23,6 +23,24 @@ export enum SortOption {
+   PRIORITY_ASC = 'PRIORITY_ASC',
+ }
+ 
++/**
++ * Represents a categorization tag.
++ */
++export interface TaskTag {
++  id: string;
++  name: string;
++  color: string;
++}
++
++/**
++ * Represents a task reminder.
++ */
++export interface TaskReminder {
++  id: string;
++  time: number; // Timestamp
++  message: string;
++}
++
+ /**
+  * The core Task object.
+  */
+@@ -32,11 +50,51 @@ export interface Task {
+   description?: string;
+   isCompleted: boolean;
+   priority: Priority;
++  tags: TaskTag[];
++  reminders: TaskReminder[];
+   createdAt: number;
+   updatedAt: number;
+   completedAt?: number;
+ }
+ 
++/**
++ * Filter Operators
++ */
++export enum FilterOperator {
++  EQUALS = 'EQUALS',
++  NOT_EQUALS = 'NOT_EQUALS',
++  CONTAINS = 'CONTAINS',
++  GREATER_THAN = 'GREATER_THAN',
++  LESS_THAN = 'LESS_THAN',
++}
++
++/**
++ * Single Filter Condition
++ */
++export interface FilterCondition {
++  id: string;
++  field: keyof Task | 'tag'; // 'tag' is a special virtual field
++  operator: FilterOperator;
++  value: any;
++}
++
++/**
++ * Complex Filter Query
++ */
++export interface FilterQuery {
++  logic: 'AND' | 'OR';
++  conditions: FilterCondition[];
++}
++
++/**
++ * Saved Filter Preset
++ */
++export interface FilterPreset {
++  id: string;
++  name: string;
++  query: FilterQuery;
++}
++
+ /**
+  * Statistics summary for the dashboard.
+  */
+@@ -69,6 +127,8 @@ export interface CreateTaskDTO {
+   text: string;
+   priority: Priority;
+   description?: string;
++  tagIds?: string[];
++  reminderIds?: string[];
+ }
+ 
+ /**
+@@ -82,7 +142,23 @@ export interface UpdateTaskDTO {
+ }
+ 
+ /**
+- * Log entry for the backend logger.
++ * Input DTO for creating a tag.
++ */
++export interface CreateTagDTO {
++  name: string;
++  color: string;
++}
++
++/**
++ * Input DTO for creating a reminder.
++ */
++export interface CreateReminderDTO {
++  time: number;
++  message: string;
++}
++
++/**
++ * System Log entry structure used in server logs.
+  */
+ export interface SystemLog {
+   id: string;
+@@ -91,3 +167,12 @@ export interface SystemLog {
+   timestamp: number;
+   context?: any;
+ }
++
++/**
++ * Cache Entry for Server-Side Caching
++ */
++export interface CacheEntry {
++  key: string;
++  value: any;
++  expiresAt: number;
++}
