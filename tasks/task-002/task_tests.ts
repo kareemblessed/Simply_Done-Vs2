@@ -84,9 +84,6 @@ test('Test 5: Invalid task ID returns null', () => {
 test('Test 6: Date validation prevents invalid dates', () => {
   const task = taskService.create({ text: 'Validation Test', priority: Priority.MEDIUM });
   try {
-    // Attempting to update with empty string or invalid format should ideally fail or be handled gracefully
-    // Implementation specific: Assuming service allows string but UI/Validator handles validation.
-    // However, let's test that update works with a valid date string.
     const validDate = new Date().toISOString();
     const result = taskService.updateDueDate(task.id, validDate);
     if (!result) throw new Error('Update failed with valid date');
