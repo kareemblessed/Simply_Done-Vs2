@@ -1,0 +1,28 @@
+task:
+task-005
+
+instructions:
+Implement cache invalidation strategy in apiService with memoization layers, ensuring TaskController responses cache correctly and invalidate on mutations.
+
+requirements:
+- Create CacheLayer type with key/value/ttl fields
+- Add memoization decorator/helper for taskService methods
+- Implement cache invalidation on task mutations (create, update, delete)
+- Extend apiService with cache middleware layer
+- Add taskController response caching strategy
+- Create cache persistence in jsonDatabase adapter
+
+Success_criteria:
+- All tests pass
+- API responses cache and retrieve correctly
+- Cache invalidates on create/update/delete operations
+- Memoized service methods prevent redundant calls
+- Cache TTL expires entries automatically
+- jsonDatabase adapter stores cache metadata
+
+author_name: kareemblessed
+author_email: blessedronan@gmail.com
+difficulty: hard
+category: Architecture
+tags: react, typescript, caching, performance
+parser_name: node
