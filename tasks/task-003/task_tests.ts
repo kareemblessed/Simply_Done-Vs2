@@ -1,6 +1,5 @@
 
-import { taskService } from '../../src/server/services/taskService';
-import { tagService } from '../../src/server/services/tagService';
+import { taskService, tagService } from '../../src/server/services/taskService';
 import { Priority, TaskTag } from '../../src/shared/types/task.types';
 
 // Mock localStorage if not available (Node environment)
