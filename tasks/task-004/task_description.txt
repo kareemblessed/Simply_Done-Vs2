@@ -1,0 +1,33 @@
+
+task_description:
+task-004
+Implement task reminders with custom notification schedules, allowing users to set multiple reminders per task that trigger based on user defined times.
+
+requirements:
+- Create TaskReminder type with id, time, and message fields
+- Add reminders array to Task type (array of TaskReminder objects)
+- Create reminderService with methods: createReminder, getRemindersForTask, deleteReminder
+- Add taskService.addReminderToTask that takes taskId and reminderId
+- Add taskService.removeReminderFromTask method
+- Expose reminder methods in TaskController
+- Add reminder management to apiService
+- Create ReminderManager component for creating and deleting reminders
+- Update TaskForm to include reminder creation UI
+- Show reminders inside TaskItem
+- Add filtering to FilterBar for tasks with upcoming reminders
+
+Success_criteria:
+- All 6 tests pass
+- Users can create custom reminders
+- Tasks can have multiple reminders
+- Reminders trigger logic exists (no actual notifications needed)
+- Removing a reminder detaches it from the task
+- Deleting a reminder removes it across all tasks
+- Reminders persist across sessions
+
+author_name: kareemblessed
+author_email: blessedronan@gmail.com
+difficulty: hard
+category: Feature
+tags: react, typescript, reminders, notifications
+parser_name: node
