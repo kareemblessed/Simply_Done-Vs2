@@ -1,9 +1,4 @@
 
-// ============================================================================
-// REMINDER SERVICE LAYER
-// Path: src/server/services/reminderService.ts
-// ============================================================================
-
 import { TaskReminder, CreateReminderDTO } from '../../shared/types/task.types';
 import { db } from '../db/jsonDatabase';
 import { VALIDATION } from '../../shared/constants';
