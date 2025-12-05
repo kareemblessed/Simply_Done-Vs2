@@ -1,6 +1,7 @@
-
-task_description:
+task:
 task-005
+
+instructions:
 Implement advanced task filtering with complex query composition, allowing users to chain multiple filter conditions with AND/OR logic operators and persist filter presets.
 
 requirements:
