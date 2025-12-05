@@ -1,8 +1,6 @@
 
-// ============================================================================
-// REMINDER CONTROLLER
-// Path: src/server/controllers/reminderController.ts
-// ============================================================================
+
+// A key file
 
 import { TaskReminder, ApiResponse, CreateReminderDTO } from '../../shared/types/task.types';
 import { reminderService } from '../services/reminderService';
