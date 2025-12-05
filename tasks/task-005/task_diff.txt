@@ -1,0 +1,1130 @@
+diff --git a/src/client/App.tsx b/src/client/App.tsx
+index bcdbba9..8a3cc4b 100644
+--- a/src/client/App.tsx
++++ b/src/client/App.tsx
+@@ -1,16 +1,120 @@
+ 
+ import React, { useEffect, useState, useMemo } from 'react';
+-import { Task, Priority, TaskStats, SortOption } from '../shared/types/task.types';
++import { Task, Priority, TaskStats, SortOption, TaskTag, TaskReminder, FilterQuery, FilterPreset } from '../shared/types/task.types';
+ import { getPriorityWeight } from '../shared/utils/helpers';
++import { TAG_COLORS } from '../shared/constants';
+ import { apiService } from './services/apiService';
+ import { TaskForm } from './components/TaskForm';
+ import { FilterBar } from './components/FilterBar';
+ import { StatsCard } from './components/StatsCard';
+ import { TaskList } from './components/TaskList';
++import { ReminderManager } from './components/ReminderManager';
++import { FilterComposer } from './components/FilterComposer';
+ 
++// --- Tag Manager Component (Inlined) ---
++interface TagManagerProps {
++  tags: TaskTag[];
++  onCreateTag: (name: string, color: string) => Promise<void>;
++  onDeleteTag: (id: string) => Promise<void>;
++  isOpen: boolean;
++  onClose: () => void;
++}
++
++const TagManager: React.FC<TagManagerProps> = ({ tags, onCreateTag, onDeleteTag, isOpen, onClose }) => {
++  const [newName, setNewName] = useState('');
++  const [selectedColor, setSelectedColor] = useState(TAG_COLORS[0]);
++  const [isSubmitting, setIsSubmitting] = useState(false);
++
++  if (!isOpen) return null;
++
++  const handleSubmit = async (e: React.FormEvent) => {
++    e.preventDefault();
++    if (!newName.trim()) return;
++
++    setIsSubmitting(true);
++    try {
++      await onCreateTag(newName, selectedColor.value);
++      setNewName('');
++    } finally {
++      setIsSubmitting(false);
++    }
++  };
++
++  return (
++    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30 backdrop-blur-sm animate-fade-in">
++      <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden animate-slide-up">
++        <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
++          <h2 className="text-xl font-bold text-slate-800">Manage Tags</h2>
++          <button onClick={onClose} className="p-2 text-slate-400 hover:text-slate-600 rounded-full hover:bg-slate-100 transition-colors">
++            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
++          </button>
++        </div>
++
++        <div className="p-6 space-y-6">
++          <form onSubmit={handleSubmit} className="space-y-4">
++            <input
++              type="text"
++              value={newName}
++              onChange={(e) => setNewName(e.target.value)}
++              placeholder="New tag name..."
++              className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all text-sm font-medium"
++            />
++            
++            <div className="flex flex-wrap gap-2">
++              {TAG_COLORS.map((c) => (
++                <button
++                  key={c.name}
++                  type="button"
++                  onClick={() => setSelectedColor(c)}
++                  className={`w-6 h-6 rounded-full border-2 transition-transform hover:scale-110 ${c.value.split(' ')[0]} ${
++                    selectedColor.name === c.name ? 'border-slate-800 scale-110' : 'border-transparent'
++                  }`}
++                  title={c.name}
++                />
++              ))}
++            </div>
++
++            <button
++              type="submit"
++              disabled={!newName.trim() || isSubmitting}
++              className="w-full py-2.5 bg-indigo-600 text-white rounded-xl font-bold text-sm shadow-lg shadow-indigo-200 hover:bg-indigo-700 disabled:opacity-50 disabled:shadow-none transition-all"
++            >
++              {isSubmitting ? 'Creating...' : 'Create Tag'}
++            </button>
++          </form>
++
++          <div className="space-y-2 max-h-60 overflow-y-auto pr-2">
++            {tags.length === 0 ? (
++              <p className="text-center text-slate-400 text-sm py-4">No tags created yet.</p>
++            ) : (
++              tags.map(tag => (
++                <div key={tag.id} className="flex items-center justify-between p-3 bg-white border border-slate-100 rounded-xl shadow-sm hover:border-slate-200 transition-colors">
++                  <span className={`px-2 py-1 rounded-md text-xs font-bold uppercase tracking-wide ${tag.color}`}>
++                    {tag.name}
++                  </span>
++                  <button
++                    onClick={() => onDeleteTag(tag.id)}
++                    className="text-slate-400 hover:text-red-500 p-1 rounded-md hover:bg-red-50 transition-colors"
++                  >
++                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
++                  </button>
++                </div>
++              ))
++            )}
++          </div>
++        </div>
++      </div>
++    </div>
++  );
++};
++
++// --- Main App Component ---
+ const App: React.FC = () => {
+   // --- State ---
+   const [tasks, setTasks] = useState<Task[]>([]);
++  const [tags, setTags] = useState<TaskTag[]>([]);
++  const [reminders, setReminders] = useState<TaskReminder[]>([]);
++  const [presets, setPresets] = useState<FilterPreset[]>([]);
+   const [stats, setStats] = useState<TaskStats | null>(null);
+   const [loading, setLoading] = useState(true);
+   const [error, setError] = useState<string | null>(null);
+@@ -18,17 +122,31 @@ const App: React.FC = () => {
+   // UI State
+   const [filter, setFilter] = useState<'ALL' | 'ACTIVE' | 'COMPLETED'>('ALL');
+   const [sort, setSort] = useState<SortOption>(SortOption.NEWEST);
++  const [tagFilter, setTagFilter] = useState<string | null>(null);
++  const [showRemindersOnly, setShowRemindersOnly] = useState(false);
++  
++  const [activeAdvancedFilter, setActiveAdvancedFilter] = useState<FilterQuery | null>(null);
++
++  const [isTagManagerOpen, setIsTagManagerOpen] = useState(false);
++  const [isReminderManagerOpen, setIsReminderManagerOpen] = useState(false);
++  const [isFilterComposerOpen, setIsFilterComposerOpen] = useState(false);
+ 
+   // --- Actions ---
+   const refreshData = async () => {
+     try {
+       setLoading(true);
+-      const [fetchedTasks, fetchedStats] = await Promise.all([
++      const [fetchedTasks, fetchedTags, fetchedReminders, fetchedStats, fetchedPresets] = await Promise.all([
+         apiService.fetchTasks(),
+-        apiService.getStats()
++        apiService.fetchTags(),
++        apiService.fetchReminders(),
++        apiService.getStats(),
++        apiService.fetchPresets()
+       ]);
+       setTasks(fetchedTasks);
++      setTags(fetchedTags);
++      setReminders(fetchedReminders);
+       setStats(fetchedStats);
++      setPresets(fetchedPresets);
+       setError(null);
+     } catch (err: any) {
+       setError(err.message || 'Failed to load data');
+@@ -48,14 +166,22 @@ const App: React.FC = () => {
+     } catch (e) { console.error(e); }
+   };
+ 
+-  const handleAddTask = async (text: string, priority: Priority, desc?: string) => {
++  const handleAddTask = async (text: string, priority: Priority, desc?: string, tagIds?: string[], reminderIds?: string[]) => {
+     try {
+-      const newTask = await apiService.createTask(text, priority, desc);
++      const newTask = await apiService.createTask(text, priority, desc, tagIds, reminderIds);
+       setTasks(prev => [newTask, ...prev]);
+       await updateStats();
+     } catch (err: any) { alert(err.message); }
+   };
+ 
++  const handleEditTask = async (id: string, updates: Partial<Task>) => {
++    try {
++      const updated = await apiService.updateTask(id, updates);
++      setTasks(prev => prev.map(t => t.id === id ? updated : t));
++      await updateStats();
++    } catch (err: any) { alert(err.message); }
++  };
++
+   const handleToggleTask = async (id: string, currentStatus: boolean) => {
+     setTasks(prev => prev.map(t => t.id === id ? { ...t, isCompleted: !currentStatus } : t));
+     try {
+@@ -83,12 +209,100 @@ const App: React.FC = () => {
+     } catch (err: any) { alert(err.message); }
+   };
+ 
++  // --- Tag Management ---
++  const handleCreateTag = async (name: string, color: string) => {
++    try {
++      const newTag = await apiService.createTag(name, color);
++      setTags(prev => [...prev, newTag]);
++    } catch (err: any) { alert(err.message); }
++  };
++
++  const handleDeleteTag = async (id: string) => {
++    if (!confirm('Delete this tag? It will be removed from all tasks.')) return;
++    try {
++      await apiService.deleteTag(id);
++      setTags(prev => prev.filter(t => t.id !== id));
++      const freshTasks = await apiService.fetchTasks();
++      setTasks(freshTasks);
++    } catch (err: any) { alert(err.message); }
++  };
++
++  // --- Reminder Management ---
++  const handleCreateReminder = async (time: number, message: string) => {
++    try {
++      const newRem = await apiService.createReminder(time, message);
++      setReminders(prev => [...prev, newRem]);
++    } catch (err: any) { alert(err.message); }
++  };
++
++  const handleDeleteReminder = async (id: string) => {
++    if (!confirm('Delete this reminder?')) return;
++    try {
++      await apiService.deleteReminder(id);
++      setReminders(prev => prev.filter(r => r.id !== id));
++      const freshTasks = await apiService.fetchTasks();
++      setTasks(freshTasks);
++    } catch (err: any) { alert(err.message); }
++  };
++
++  // --- Advanced Filtering ---
++  const handleApplyAdvancedFilter = async (query: FilterQuery) => {
++    setActiveAdvancedFilter(query);
++    setLoading(true);
++    try {
++      // Fetch fresh tasks then filter them server-side (conceptually)
++      // In this local architecture, we'll fetch filtered tasks from "server"
++      const filtered = await apiService.executeFilter(query);
++      setTasks(filtered);
++    } catch (err: any) {
++      alert(err.message);
++    } finally {
++      setLoading(false);
++    }
++  };
++
++  const handleSavePreset = async (name: string, query: FilterQuery) => {
++    try {
++      const preset = await apiService.savePreset(name, query);
++      setPresets(prev => [...prev, preset]);
++    } catch (err: any) { alert(err.message); }
++  };
++
++  const handleDeletePreset = async (id: string) => {
++    if (!confirm('Delete this preset?')) return;
++    try {
++      await apiService.deletePreset(id);
++      setPresets(prev => prev.filter(p => p.id !== id));
++    } catch (err: any) { alert(err.message); }
++  };
++
++  const clearAdvancedFilter = async () => {
++    setActiveAdvancedFilter(null);
++    await refreshData();
++  };
++
+   // --- Logic ---
+   const processedTasks = useMemo(() => {
++    // If advanced filter is active, we rely on the tasks state which is already filtered by API
+     let result = [...tasks];
+-    if (filter === 'ACTIVE') result = result.filter(t => !t.isCompleted);
+-    else if (filter === 'COMPLETED') result = result.filter(t => t.isCompleted);
++    
++    if (!activeAdvancedFilter) {
++        // Status Filter
++        if (filter === 'ACTIVE') result = result.filter(t => !t.isCompleted);
++        else if (filter === 'COMPLETED') result = result.filter(t => t.isCompleted);
++
++        // Tag Filter
++        if (tagFilter) {
++          result = result.filter(t => t.tags && t.tags.some(tag => tag.id === tagFilter));
++        }
++
++        // Reminder Filter
++        if (showRemindersOnly) {
++          result = result.filter(t => t.reminders && t.reminders.length > 0);
++        }
++    }
+ 
++    // Sort
+     result.sort((a, b) => {
+       switch (sort) {
+         case SortOption.NEWEST: return b.createdAt - a.createdAt;
+@@ -99,14 +313,28 @@ const App: React.FC = () => {
+       }
+     });
+     return result;
+-  }, [tasks, filter, sort]);
++  }, [tasks, filter, sort, tagFilter, showRemindersOnly, activeAdvancedFilter]);
+ 
+   return (
+     <div className="min-h-screen py-12 px-4 sm:px-6 lg:px-8 font-sans text-slate-900 relative">
+       <div className="max-w-3xl mx-auto relative z-10">
+         
+         {/* Header */}
+-        <div className="mb-12 text-center">
++        <div className="mb-12 text-center relative">
++          <div className="absolute right-0 top-0 flex gap-2">
++            <button 
++              onClick={() => setIsTagManagerOpen(true)}
++              className="text-xs font-bold text-indigo-500 hover:text-indigo-700 hover:bg-indigo-50 px-3 py-1 rounded-lg transition-colors"
++            >
++              Tags
++            </button>
++            <button 
++              onClick={() => setIsReminderManagerOpen(true)}
++              className="text-xs font-bold text-purple-500 hover:text-purple-700 hover:bg-purple-50 px-3 py-1 rounded-lg transition-colors"
++            >
++              Reminders
++            </button>
++          </div>
+           <h1 className="text-6xl font-black tracking-tighter text-slate-800 mb-3 drop-shadow-sm">
+             Simply<span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-purple-600">Done</span>.
+           </h1>
+@@ -119,18 +347,48 @@ const App: React.FC = () => {
+         {!loading && !error && <StatsCard stats={stats} />}
+ 
+         {/* Form */}
+-        <TaskForm onAdd={handleAddTask} />
++        <TaskForm onAdd={handleAddTask} tags={tags} reminders={reminders} />
+ 
+         {/* Main List Area */}
+         <div className="bg-white/60 backdrop-blur-2xl rounded-[2.5rem] p-8 shadow-2xl shadow-indigo-100/50 border border-white">
+-          <FilterBar 
+-            currentFilter={filter}
+-            currentSort={sort}
+-            onFilterChange={setFilter}
+-            onSortChange={setSort}
+-            onClearCompleted={handleClearCompleted}
+-            hasCompleted={tasks.some(t => t.isCompleted)}
+-          />
++          
++           {activeAdvancedFilter ? (
++             <div className="mb-6 pb-6 border-b border-slate-100 flex justify-between items-center">
++               <div className="flex flex-col">
++                 <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Active Filter</span>
++                 <span className="font-bold text-slate-800">Custom Query ({activeAdvancedFilter.conditions.length} conditions)</span>
++               </div>
++               <button 
++                 onClick={clearAdvancedFilter}
++                 className="px-4 py-2 bg-red-50 text-red-600 font-bold text-xs rounded-xl hover:bg-red-100 transition-colors"
++               >
++                 Clear Filter
++               </button>
++             </div>
++           ) : (
++              <div className="relative">
++                <FilterBar 
++                  currentFilter={filter}
++                  currentSort={sort}
++                  selectedTagId={tagFilter}
++                  showRemindersOnly={showRemindersOnly}
++                  tags={tags}
++                  onFilterChange={setFilter}
++                  onSortChange={setSort}
++                  onTagFilterChange={setTagFilter}
++                  onToggleRemindersOnly={() => setShowRemindersOnly(prev => !prev)}
++                  onClearCompleted={handleClearCompleted}
++                  hasCompleted={tasks.some(t => t.isCompleted)}
++                />
++                <button
++                  onClick={() => setIsFilterComposerOpen(true)}
++                  className="absolute top-0 right-0 -mt-16 sm:mt-0 sm:relative sm:float-right sm:mb-4 text-xs font-bold text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded-lg border border-indigo-100 hover:bg-indigo-100 transition-colors flex items-center gap-1"
++                >
++                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" /></svg>
++                  Advanced
++                </button>
++              </div>
++           )}
+ 
+           {error && (
+             <div className="mb-6 p-4 bg-red-50 text-red-700 rounded-2xl border border-red-100 flex items-center gap-3">
+@@ -144,7 +402,9 @@ const App: React.FC = () => {
+             loading={loading}
+             onToggle={handleToggleTask}
+             onDelete={handleDeleteTask}
++            onEdit={handleEditTask}
+             emptyMessage={
++              activeAdvancedFilter ? "No tasks match your custom filter." :
+               filter === 'ALL' ? "Your list is empty. Add a task above to get started!" 
+               : filter === 'ACTIVE' ? "You're all caught up! Great job." 
+               : "Finish some tasks to see them here."
+@@ -154,10 +414,36 @@ const App: React.FC = () => {
+ 
+         <div className="mt-12 text-center opacity-60">
+            <p className="text-[10px] text-slate-500 font-bold tracking-[0.2em] uppercase">
+-             v2.1 • LocalStorage Database • Secure
++             v2.4 • LocalStorage Database • Secure
+            </p>
+         </div>
+       </div>
++
++      <TagManager 
++        isOpen={isTagManagerOpen}
++        onClose={() => setIsTagManagerOpen(false)}
++        tags={tags}
++        onCreateTag={handleCreateTag}
++        onDeleteTag={handleDeleteTag}
++      />
++
++      <ReminderManager
++        isOpen={isReminderManagerOpen}
++        onClose={() => setIsReminderManagerOpen(false)}
++        reminders={reminders}
++        onCreateReminder={handleCreateReminder}
++        onDeleteReminder={handleDeleteReminder}
++      />
++
++      <FilterComposer
++        isOpen={isFilterComposerOpen}
++        onClose={() => setIsFilterComposerOpen(false)}
++        onApply={handleApplyAdvancedFilter}
++        onSavePreset={handleSavePreset}
++        onLoadPreset={(p) => setActiveAdvancedFilter(p.query)}
++        onDeletePreset={handleDeletePreset}
++        presets={presets}
++      />
+     </div>
+   );
+ };
+diff --git a/src/client/components/ReminderManager.tsx b/src/client/components/ReminderManager.tsx
+index 76b6480..908960b 100644
+--- a/src/client/components/ReminderManager.tsx
++++ b/src/client/components/ReminderManager.tsx
+@@ -1,4 +1,7 @@
+ 
++// This is the ReminderManager component for managing task reminders in the SimplyDone application.
++
++
+ import React, { useState } from 'react';
+ import { TaskReminder } from '../../shared/types/task.types';
+ import { formatTime, formatDate } from '../../shared/utils/helpers';
+diff --git a/src/client/services/apiService.ts b/src/client/services/apiService.ts
+index c53d3aa..cf523b6 100644
+--- a/src/client/services/apiService.ts
++++ b/src/client/services/apiService.ts
+@@ -4,8 +4,8 @@
+ // Path: src/client/services/apiService.ts
+ // ============================================================================
+ 
+-import { Task, CreateTaskDTO, UpdateTaskDTO, TaskStats, Priority } from '../../shared/types/task.types';
+-import { TaskController } from '../../server/index';
++import { Task, CreateTaskDTO, UpdateTaskDTO, TaskStats, Priority, TaskTag, CreateTagDTO, TaskReminder, CreateReminderDTO, FilterQuery, FilterPreset } from '../../shared/types/task.types';
++import { TaskController, ReminderController, FilterController } from '../../server/index';
+ 
+ /**
+  * Handles communication between Frontend components and the Backend Controller.
+@@ -18,13 +18,21 @@ export const apiService = {
+     return response.data;
+   },
+ 
+-  async createTask(text: string, priority: Priority, description?: string): Promise<Task> {
+-    const payload: CreateTaskDTO = { text, priority, description };
++  asyncKZ(): Promise<void> { return; },
++
++  async createTask(text: string, priority: Priority, description?: string, tagIds?: string[], reminderIds?: string[]): Promise<Task> {
++    const payload: CreateTaskDTO = { text, priority, description, tagIds, reminderIds };
+     const response = await TaskController.createTask(payload);
+     if (!response.success || !response.data) throw new Error(response.error);
+     return response.data;
+   },
+ 
++  async updateTask(id: string, updates: UpdateTaskDTO): Promise<Task> {
++    const response = await TaskController.updateTask(id, updates);
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
+   async toggleTask(id: string, currentStatus: boolean): Promise<Task> {
+     const payload: UpdateTaskDTO = { isCompleted: !currentStatus };
+     const response = await TaskController.updateTask(id, payload);
+@@ -47,5 +55,98 @@ export const apiService = {
+     const response = await TaskController.getStats();
+     if (!response.success || !response.data) throw new Error(response.error);
+     return response.data;
++  },
++
++  // --- Tags ---
++
++  async fetchTags(): Promise<TaskTag[]> {
++    const response = await TaskController.getTags();
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
++  asyncSvTag(): Promise<void> { return; },
++
++  async createTag(name: string, color: string): Promise<TaskTag> {
++    const payload: CreateTagDTO = { name, color };
++    const response = await TaskController.createTag(payload);
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
++  async deleteTag(id: string): Promise<void> {
++    const response = await TaskController.deleteTag(id);
++    if (!response.success) throw new Error(response.error);
++  },
++
++  async addTagToTask(taskId: string, tagId: string): Promise<Task> {
++    const response = await TaskController.addTagToTask(taskId, tagId);
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
++  async removeTagFromTask(taskId: string, tagId: string): Promise<Task> {
++    const response = await TaskController.removeTagFromTask(taskId, tagId);
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
++  // --- Reminders ---
++
++  async fetchReminders(): Promise<TaskReminder[]> {
++    const response = await ReminderController.getReminders();
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
++  async createReminder(time: number, message: string): Promise<TaskReminder> {
++    const payload: CreateReminderDTO = { time, message };
++    const response = await ReminderController.createReminder(payload);
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
++  async deleteReminder(id: string): Promise<void> {
++    const response = await ReminderController.deleteReminder(id);
++    if (!response.success) throw new Error(response.error);
++  },
++
++  asyncQVRem(): Promise<void> { return; },
++
++  async addReminderToTask(taskId: string, reminderId: string): Promise<Task> {
++    const response = await TaskController.addReminderToTask(taskId, reminderId);
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
++  async removeReminderFromTask(taskId: string, reminderId: string): Promise<Task> {
++    const response = await TaskController.removeReminderFromTask(taskId, reminderId);
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
++  // --- Advanced Filtering ---
++
++  async executeFilter(query: FilterQuery): Promise<Task[]> {
++    const response = await FilterController.executeQuery(query);
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
++  async fetchPresets(): Promise<FilterPreset[]> {
++    const response = await FilterController.getPresets();
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
++  async savePreset(name: string, query: FilterQuery): Promise<FilterPreset> {
++    const response = await FilterController.savePreset(name, query);
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
++  async deletePreset(id: string): Promise<void> {
++    const response = await FilterController.deletePreset(id);
++    if (!response.success) throw new Error(response.error);
+   }
+ };
+diff --git a/src/server/db/jsonDatabase.ts b/src/server/db/jsonDatabase.ts
+index 991a1a6..920f23f 100644
+--- a/src/server/db/jsonDatabase.ts
++++ b/src/server/db/jsonDatabase.ts
+@@ -4,14 +4,27 @@
+ // Path: src/server/db/jsonDatabase.ts
+ // ============================================================================
+ 
+-import { Task, SystemLog } from '../../shared/types/task.types';
++import { Task, TaskTag, TaskReminder, FilterPreset, SystemLog } from '../../shared/types/task.types';
+ import { DB_KEYS } from '../../shared/constants';
+ 
+ class JsonDatabase {
+   
++  private getItem(key: string): string | null {
++    if (typeof localStorage !== 'undefined') {
++      return localStorage.getItem(key);
++    }
++    return null;
++  }
++
++  private setItem(key: string, value: string): void {
++    if (typeof localStorage !== 'undefined') {
++      localStorage.setItem(key, value);
++    }
++  }
++  
+   readTasks(): Task[] {
+     try {
+-      const data = localStorage.getItem(DB_KEYS.TASKS);
++      const data = this.getItem(DB_KEYS.TASKS);
+       return data ? JSON.parse(data) : [];
+     } catch (e) {
+       console.error("[DB] Read Error", e);
+@@ -21,27 +34,86 @@ class JsonDatabase {
+ 
+   writeTasks(tasks: Task[]): void {
+     try {
+-      localStorage.setItem(DB_KEYS.TASKS, JSON.stringify(tasks));
++      this.setItem(DB_KEYS.TASKS, JSON.stringify(tasks));
+     } catch (e) {
+       console.error("[DB] Write Error", e);
+     }
+   }
+ 
++  readTags(): TaskTag[] {
++    try {
++      const data = this.getItem(DB_KEYS.TAGS);
++      return data ? JSON.parse(data) : [];
++    } catch (e) {
++      console.error("[DB] Read Tags Error", e);
++      return [];
++    }
++  }
++
++  writeTags(tags: TaskTag[]): void {
++    try {
++      this.setItem(DB_KEYS.TAGS, JSON.stringify(tags));
++    } catch (e) {
++      console.error("[DB] Write Tags Error", e);
++    }
++  }
++
++  readReminders(): TaskReminder[] {
++    try {
++      const data = this.getItem(DB_KEYS.REMINDERS);
++      return data ? JSON.parse(data) : [];
++    } catch (e) {
++      console.error("[DB] Read Reminders Error", e);
++      return [];
++    }
++  }
++
++  writeReminders(reminders: TaskReminder[]): void {
++    try {
++      this.setItem(DB_KEYS.REMINDERS, JSON.stringify(reminders));
++    } catch (e) {
++      console.error("[DB] Write Reminders Error", e);
++    }
++  }
++
++  readPresets(): FilterPreset[] {
++    try {
++      const data = this.getItem(DB_KEYS.PRESETS);
++      return data ? JSON.parse(data) : [];
++    } catch (e) {
++      console.error("[DB] Read Presets Error", e);
++      return [];
++    }
++  }
++
++  writePresets(presets: FilterPreset[]): void {
++    try {
++      this.setItem(DB_KEYS.PRESETS, JSON.stringify(presets));
++    } catch (e) {
++      console.error("[DB] Write Presets Error", e);
++    }
++  }
++
+   writeLog(log: SystemLog): void {
+     try {
+       const logs = this.readLogs();
+       logs.push(log);
+       // Limit logs to prevent localStorage quotas
+       if (logs.length > 200) logs.shift();
+-      localStorage.setItem(DB_KEYS.LOGS, JSON.stringify(logs));
++      this.setItem(DB_KEYS.LOGS, JSON.stringify(logs));
+     } catch (e) {
+       console.error("[DB] Log Error", e);
+     }
+   }
+ 
+   readLogs(): SystemLog[] {
+-    const data = localStorage.getItem(DB_KEYS.LOGS);
+-    return data ? JSON.parse(data) : [];
++    try {
++      const data = this.getItem(DB_KEYS.LOGS);
++      return data ? JSON.parse(data) : [];
++    } catch (e) {
++       console.error("[DB] Log Read Error", e);
++       return [];
++    }
+   }
+ }
+ 
+diff --git a/src/server/services/taskService.ts b/src/server/services/taskService.ts
+index 16d21d4..6f2c2d0 100644
+--- a/src/server/services/taskService.ts
++++ b/src/server/services/taskService.ts
+@@ -4,8 +4,11 @@
+ // Path: src/server/services/taskService.ts
+ // ============================================================================
+ 
+-import { Task, CreateTaskDTO, UpdateTaskDTO, TaskStats, Priority, SystemLog } from '../../shared/types/task.types';
++import { Task, CreateTaskDTO, UpdateTaskDTO, TaskStats, Priority, SystemLog, TaskTag, CreateTagDTO, FilterQuery } from '../../shared/types/task.types';
+ import { db } from '../db/jsonDatabase';
++import { VALIDATION } from '../../shared/constants';
++import { reminderService } from './reminderService';
++import { filterService } from './filterService';
+ 
+ // Internal Logger Service
+ const Logger = {
+@@ -26,6 +29,35 @@ function log(level: 'INFO' | 'WARN' | 'ERROR', message: string, context?: any) {
+   if (level === 'ERROR') console.error(`[SERVER] ${message}`, context);
+ }
+ 
++// ============================================================================
++// TAG SERVICE LOGIC
++// ============================================================================
++
++class TagService {
++  getAll(): TaskTag[] { return db.readTags(); }
++  getById(id: string): TaskTag | undefined { return db.readTags().find(t => t.id === id); }
++  create(dto: CreateTagDTO): TaskTag {
++    const tags = db.readTags();
++    if (!dto.name || dto.name.length > VALIDATION.MAX_TAG_NAME_LENGTH) throw new Error(`Tag name invalid`);
++    const newTag: TaskTag = { id: crypto.randomUUID(), name: dto.name.trim(), color: dto.color };
++    tags.push(newTag);
++    db.writeTags(tags);
++    return newTag;
++  }
++  delete(id: string): boolean {
++    const tags = db.readTags();
++    const filtered = tags.filter(t => t.id !== id);
++    if (filtered.length === tags.length) return false;
++    db.writeTags(filtered);
++    return true;
++  }
++}
++export const tagService = new TagService();
++
++// ============================================================================
++// TASK SERVICE LOGIC
++// ============================================================================
++
+ class TaskService {
+   
+   getAll(): Task[] {
+@@ -36,6 +68,11 @@ class TaskService {
+     return db.readTasks().find(t => t.id === id);
+   }
+ 
++  filterTasksByQuery(query: FilterQuery): Task[] {
++    const allTasks = this.getAll();
++    return filterService.executeQuery(allTasks, query);
++  }
++
+   create(dto: CreateTaskDTO): Task {
+     const tasks = db.readTasks();
+     
+@@ -45,8 +82,26 @@ class TaskService {
+       t.text.toLowerCase() === dto.text.trim().toLowerCase()
+     );
+ 
+-    if (isDuplicate) {
+-      Logger.warn('Creating duplicate task', { text: dto.text });
++    if (isDuplicate) Logger.warn('Creating duplicate task', { text: dto.text });
++
++    // Resolve initial tags
++    const initialTags = [];
++    if (dto.tagIds && dto.tagIds.length > 0) {
++      const allTags = tagService.getAll();
++      for (const tagId of dto.tagIds) {
++        const found = allTags.find(t => t.id === tagId);
++        if (found) initialTags.push(found);
++      }
++    }
++
++    // Resolve initial reminders
++    const initialReminders = [];
++    if (dto.reminderIds && dto.reminderIds.length > 0) {
++      const allReminders = reminderService.getAll();
++      for (const rId of dto.reminderIds) {
++        const found = allReminders.find(r => r.id === rId);
++        if (found) initialReminders.push(found);
++      }
+     }
+ 
+     const newTask: Task = {
+@@ -55,6 +110,8 @@ class TaskService {
+       description: dto.description?.trim(),
+       priority: dto.priority,
+       isCompleted: false,
++      tags: initialTags,
++      reminders: initialReminders,
+       createdAt: Date.now(),
+       updatedAt: Date.now(),
+     };
+@@ -69,18 +126,12 @@ class TaskService {
+   update(id: string, dto: UpdateTaskDTO): Task | null {
+     const tasks = db.readTasks();
+     const index = tasks.findIndex(t => t.id === id);
+-    
+     if (index === -1) return null;
+ 
+     const currentTask = tasks[index];
+-    
+-    // Handle completion timestamp logic
+     let completedAt = currentTask.completedAt;
+-    if (dto.isCompleted === true && !currentTask.isCompleted) {
+-      completedAt = Date.now();
+-    } else if (dto.isCompleted === false) {
+-      completedAt = undefined;
+-    }
++    if (dto.isCompleted === true && !currentTask.isCompleted) completedAt = Date.now();
++    else if (dto.isCompleted === false) completedAt = undefined;
+ 
+     const updatedTask: Task = {
+       ...currentTask,
+@@ -92,16 +143,13 @@ class TaskService {
+     tasks[index] = updatedTask;
+     db.writeTasks(tasks);
+     Logger.info('Task updated', { id, updates: Object.keys(dto) });
+-    
+     return updatedTask;
+   }
+ 
+   delete(id: string): boolean {
+     const tasks = db.readTasks();
+     const filtered = tasks.filter(t => t.id !== id);
+-    
+     if (filtered.length === tasks.length) return false;
+-
+     db.writeTasks(filtered);
+     Logger.info('Task deleted', { id });
+     return true;
+@@ -111,15 +159,119 @@ class TaskService {
+     const tasks = db.readTasks();
+     const activeTasks = tasks.filter(t => !t.isCompleted);
+     const countRemoved = tasks.length - activeTasks.length;
+-    
+     if (countRemoved > 0) {
+       db.writeTasks(activeTasks);
+       Logger.info('Cleared completed tasks', { count: countRemoved });
+     }
+-    
+     return countRemoved;
+   }
+ 
++  // --- Tag Management ---
++
++  addTagToTask(taskId: string, tagId: string): Task | null {
++    const tasks = db.readTasks();
++    const index = tasks.findIndex(t => t.id === taskId);
++    if (index === -1) return null;
++
++    const tag = tagService.getById(tagId);
++    if (!tag) return null;
++
++    if (tasks[index].tags.some(t => t.id === tagId)) return tasks[index];
++
++    tasks[index].tags.push(tag);
++    tasks[index].updatedAt = Date.now();
++    db.writeTasks(tasks);
++    return tasks[index];
++  }
++
++  removeTagFromTask(taskId: string, tagId: string): Task | null {
++    const tasks = db.readTasks();
++    const index = tasks.findIndex(t => t.id === taskId);
++    if (index === -1) return null;
++
++    const originalLength = tasks[index].tags.length;
++    tasks[index].tags = tasks[index].tags.filter(t => t.id !== tagId);
++
++    if (tasks[index].tags.length !== originalLength) {
++      tasks[index].updatedAt = Date.now();
++      db.writeTasks(tasks);
++    }
++    return tasks[index];
++  }
++
++  removeTagGlobally(tagId: string): void {
++    const tasks = db.readTasks();
++    let updated = false;
++    const newTasks = tasks.map(task => {
++      if (task.tags.some(t => t.id === tagId)) {
++        updated = true;
++        return { ...task, tags: task.tags.filter(t => t.id !== tagId) };
++      }
++      return task;
++    });
++    if (updated) {
++      db.writeTasks(newTasks);
++      Logger.info('Removed deleted tag from all tasks', { tagId });
++    }
++  }
++
++  // --- Reminder Management ---
++
++  addReminderToTask(taskId: string, reminderId: string): Task | null {
++    const tasks = db.readTasks();
++    const index = tasks.findIndex(t => t.id === taskId);
++    if (index === -1) return null;
++
++    const reminder = reminderService.getById(reminderId);
++    if (!reminder) return null;
++
++    // Avoid duplicates
++    if (tasks[index].reminders && tasks[index].reminders.some(r => r.id === reminderId)) {
++      return tasks[index];
++    }
++    
++    // Initialize if undefined (migration)
++    if (!tasks[index].reminders) tasks[index].reminders = [];
++
++    tasks[index].reminders.push(reminder);
++    tasks[index].updatedAt = Date.now();
++    db.writeTasks(tasks);
++    return tasks[index];
++  }
++
++  removeReminderFromTask(taskId: string, reminderId: string): Task | null {
++    const tasks = db.readTasks();
++    const index = tasks.findIndex(t => t.id === taskId);
++    if (index === -1) return null;
++
++    if (!tasks[index].reminders) return tasks[index];
++
++    const originalLength = tasks[index].reminders.length;
++    tasks[index].reminders = tasks[index].reminders.filter(r => r.id !== reminderId);
++
++    if (tasks[index].reminders.length !== originalLength) {
++      tasks[index].updatedAt = Date.now();
++      db.writeTasks(tasks);
++    }
++    return tasks[index];
++  }
++
++  removeReminderGlobally(reminderId: string): void {
++    const tasks = db.readTasks();
++    let updated = false;
++    const newTasks = tasks.map(task => {
++      if (task.reminders && task.reminders.some(r => r.id === reminderId)) {
++        updated = true;
++        return { ...task, reminders: task.reminders.filter(r => r.id !== reminderId) };
++      }
++      return task;
++    });
++    if (updated) {
++      db.writeTasks(newTasks);
++      Logger.info('Removed deleted reminder from all tasks', { reminderId });
++    }
++  }
++
+   getStats(): TaskStats {
+     const tasks = db.readTasks();
+     const total = tasks.length;
+diff --git a/src/shared/constants.ts b/src/shared/constants.ts
+index 30fcd12..34d7192 100644
+--- a/src/shared/constants.ts
++++ b/src/shared/constants.ts
+@@ -5,11 +5,14 @@
+ // ============================================================================
+ 
+ export const APP_NAME = "SimplyDone";
+-export const APP_VERSION = "2.1.0";
++export const APP_VERSION = "2.4.0";
+ 
+ // Database Configuration
+ export const DB_KEYS = {
+   TASKS: 'simplydone_tasks_v3',
++  TAGS: 'simplydone_tags_v3',
++  REMINDERS: 'simplydone_reminders_v3',
++  PRESETS: 'simplydone_presets_v3',
+   LOGS: 'simplydone_logs_v3',
+ };
+ 
+@@ -17,6 +20,8 @@ export const DB_KEYS = {
+ export const VALIDATION = {
+   MAX_TITLE_LENGTH: 100,
+   MAX_DESC_LENGTH: 500,
++  MAX_TAG_NAME_LENGTH: 15,
++  MAX_REMINDER_MSG_LENGTH: 50,
+ };
+ 
+ // UI Colors (Shared reference for consistency)
+@@ -25,3 +30,22 @@ export const PRIORITY_COLORS = {
+   MEDIUM: 'text-amber-600 bg-amber-50 border-amber-200',
+   LOW: 'text-blue-600 bg-blue-50 border-blue-200',
+ };
++
++// Available Tag Colors (Tailwind classes)
++export const TAG_COLORS = [
++  { name: 'Red', value: 'bg-red-100 text-red-800 border-red-200' },
++  { name: 'Orange', value: 'bg-orange-100 text-orange-800 border-orange-200' },
++  { name: 'Amber', value: 'bg-amber-100 text-amber-800 border-amber-200' },
++  { name: 'Green', value: 'bg-green-100 text-green-800 border-green-200' },
++  { name: 'Emerald', value: 'bg-emerald-100 text-emerald-800 border-emerald-200' },
++  { name: 'Teal', value: 'bg-teal-100 text-teal-800 border-teal-200' },
++  { name: 'Cyan', value: 'bg-cyan-100 text-cyan-800 border-cyan-200' },
++  { name: 'Sky', value: 'bg-sky-100 text-sky-800 border-sky-200' },
++  { name: 'Blue', value: 'bg-blue-100 text-blue-800 border-blue-200' },
++  { name: 'Indigo', value: 'bg-indigo-100 text-indigo-800 border-indigo-200' },
++  { name: 'Violet', value: 'bg-violet-100 text-violet-800 border-violet-200' },
++  { name: 'Purple', value: 'bg-purple-100 text-purple-800 border-purple-200' },
++  { name: 'Fuchsia', value: 'bg-fuchsia-100 text-fuchsia-800 border-fuchsia-200' },
++  { name: 'Pink', value: 'bg-pink-100 text-pink-800 border-pink-200' },
++  { name: 'Rose', value: 'bg-rose-100 text-rose-800 border-rose-200' },
++];
+diff --git a/src/shared/types/task.types.ts b/src/shared/types/task.types.ts
+index 00b22be..657d959 100644
+--- a/src/shared/types/task.types.ts
++++ b/src/shared/types/task.types.ts
+@@ -23,6 +23,24 @@ export enum SortOption {
+   PRIORITY_ASC = 'PRIORITY_ASC',
+ }
+ 
++/**
++ * Represents a categorization tag.
++ */
++export interface TaskTag {
++  id: string;
++  name: string;
++  color: string;
++}
++
++/**
++ * Represents a task reminder.
++ */
++export interface TaskReminder {
++  id: string;
++  time: number; // Timestamp
++  message: string;
++}
++
+ /**
+  * The core Task object.
+  */
+@@ -32,11 +50,51 @@ export interface Task {
+   description?: string;
+   isCompleted: boolean;
+   priority: Priority;
++  tags: TaskTag[];
++  reminders: TaskReminder[];
+   createdAt: number;
+   updatedAt: number;
+   completedAt?: number;
+ }
+ 
++/**
++ * Filter Operators
++ */
++export enum FilterOperator {
++  EQUALS = 'EQUALS',
++  NOT_EQUALS = 'NOT_EQUALS',
++  CONTAINS = 'CONTAINS',
++  GREATER_THAN = 'GREATER_THAN',
++  LESS_THAN = 'LESS_THAN',
++}
++
++/**
++ * Single Filter Condition
++ */
++export interface FilterCondition {
++  id: string;
++  field: keyof Task | 'tag'; // 'tag' is a special virtual field
++  operator: FilterOperator;
++  value: any;
++}
++
++/**
++ * Complex Filter Query
++ */
++export interface FilterQuery {
++  logic: 'AND' | 'OR';
++  conditions: FilterCondition[];
++}
++
++/**
++ * Saved Filter Preset
++ */
++export interface FilterPreset {
++  id: string;
++  name: string;
++  query: FilterQuery;
++}
++
+ /**
+  * Statistics summary for the dashboard.
+  */
+@@ -69,6 +127,8 @@ export interface CreateTaskDTO {
+   text: string;
+   priority: Priority;
+   description?: string;
++  tagIds?: string[];
++  reminderIds?: string[];
+ }
+ 
+ /**
+@@ -82,7 +142,23 @@ export interface UpdateTaskDTO {
+ }
+ 
+ /**
+- * Log entry for the backend logger.
++ * Input DTO for creating a tag.
++ */
++export interface CreateTagDTO {
++  name: string;
++  color: string;
++}
++
++/**
++ * Input DTO for creating a reminder.
++ */
++export interface CreateReminderDTO {
++  time: number;
++  message: string;
++}
++
++/**
++ * System Log entry structure used in server logs.
+  */
+ export interface SystemLog {
+   id: string;
