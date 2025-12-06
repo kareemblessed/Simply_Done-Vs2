@@ -1,0 +1,813 @@
+diff --git a/src/client/App.tsx b/src/client/App.tsx
+index bcdbba9..1913ce2 100644
+--- a/src/client/App.tsx
++++ b/src/client/App.tsx
+@@ -1,5 +1,5 @@
+ 
+-import React, { useEffect, useState, useMemo } from 'react';
++import React, { useEffect, useState, useMemo, useReducer } from 'react';
+ import { Task, Priority, TaskStats, SortOption } from '../shared/types/task.types';
+ import { getPriorityWeight } from '../shared/utils/helpers';
+ import { apiService } from './services/apiService';
+@@ -8,12 +8,159 @@ import { FilterBar } from './components/FilterBar';
+ import { StatsCard } from './components/StatsCard';
+ import { TaskList } from './components/TaskList';
+ 
++// --- OPTIMISTIC REDUCER LOGIC ---
++
++export type OptimisticAction = 
++  | { type: 'INIT_TASKS'; payload: Task[] }
++  | { type: 'ADD_TASK_OPTIMISTIC'; payload: { tempId: string; task: Task } }
++  | { type: 'UPDATE_TASK_OPTIMISTIC'; payload: { id: string; updates: Partial<Task>; original: Task; actionId: string } }
++  | { type: 'DELETE_TASK_OPTIMISTIC'; payload: { id: string; original: Task; actionId: string } }
++  | { type: 'COMMIT_ACTION'; payload: { tempId?: string; finalTask?: Task; actionId: string } }
++  | { type: 'ROLLBACK_ACTION'; payload: { actionId: string; error: string } };
++
++export interface PendingAction {
++  id: string; // Unique ID for the action
++  type: 'CREATE' | 'UPDATE' | 'DELETE';
++  taskId: string;
++  previousState?: Task; // Snapshot for rollback
++}
++
++export interface TaskState {
++  tasks: Task[];
++  pendingActions: PendingAction[];
++  error: string | null;
++}
++
++export const initialState: TaskState = {
++  tasks: [],
++  pendingActions: [],
++  error: null,
++};
++
++export function taskReducer(state: TaskState, action: OptimisticAction): TaskState {
++  switch (action.type) {
++    case 'INIT_TASKS':
++      return {
++        ...state,
++        tasks: action.payload,
++        pendingActions: [], 
++        error: null 
++      };
++
++    case 'ADD_TASK_OPTIMISTIC': {
++      const { tempId, task } = action.payload;
++      return {
++        ...state,
++        tasks: [task, ...state.tasks],
++        pendingActions: [...state.pendingActions, {
++          id: tempId,
++          type: 'CREATE',
++          taskId: tempId
++        }],
++        error: null
++      };
++    }
++
++    case 'UPDATE_TASK_OPTIMISTIC': {
++      const { id, updates, original, actionId } = action.payload;
++      return {
++        ...state,
++        tasks: state.tasks.map(t => t.id === id ? { ...t, ...updates } : t),
++        pendingActions: [...state.pendingActions, {
++          id: actionId,
++          type: 'UPDATE',
++          taskId: id,
++          previousState: original
++        }],
++        error: null
++      };
++    }
++
++    case 'DELETE_TASK_OPTIMISTIC': {
++      const { id, original, actionId } = action.payload;
++      return {
++        ...state,
++        tasks: state.tasks.filter(t => t.id !== id),
++        pendingActions: [...state.pendingActions, {
++          id: actionId,
++          type: 'DELETE',
++          taskId: id,
++          previousState: original
++        }],
++        error: null
++      };
++    }
++
++    case 'COMMIT_ACTION': {
++      const { tempId, finalTask, actionId } = action.payload;
++      
++      let newTasks = [...state.tasks];
++      
++      // If Create Commit: Replace temp task with real task
++      if (tempId && finalTask) {
++        newTasks = newTasks.map(t => t.id === tempId ? finalTask : t);
++      } 
++      // If Update/Delete Commit: Logic usually handled by optimistic step, just sync data if needed
++      else if (finalTask) {
++        newTasks = newTasks.map(t => t.id === finalTask.id ? finalTask : t);
++      }
++
++      return {
++        ...state,
++        tasks: newTasks,
++        pendingActions: state.pendingActions.filter(a => 
++          (tempId ? a.id !== tempId : a.id !== actionId)
++        )
++      };
++    }
++
++    case 'ROLLBACK_ACTION': {
++      const { actionId, error } = action.payload;
++      const pendingAction = state.pendingActions.find(a => a.id === actionId);
++      
++      if (!pendingAction) return { ...state, error: `Rollback failed: ${error}` };
++
++      let restoredTasks = [...state.tasks];
++
++      if (pendingAction.type === 'CREATE') {
++        // Remove the optimistically added task
++        restoredTasks = restoredTasks.filter(t => t.id !== pendingAction.taskId);
++      } else if (pendingAction.type === 'DELETE') {
++        // Add the deleted task back
++        if (pendingAction.previousState) {
++          restoredTasks = [...restoredTasks, pendingAction.previousState];
++          // Simple sort restoration (by date desc) to keep list stable-ish
++          restoredTasks.sort((a, b) => b.createdAt - a.createdAt);
++        }
++      } else if (pendingAction.type === 'UPDATE') {
++        // Revert fields
++        if (pendingAction.previousState) {
++          restoredTasks = restoredTasks.map(t => 
++            t.id === pendingAction.taskId ? pendingAction.previousState! : t
++          );
++        }
++      }
++
++      return {
++        ...state,
++        tasks: restoredTasks,
++        pendingActions: state.pendingActions.filter(a => a.id !== actionId),
++        error // Set the error message to display in UI
++      };
++    }
++
++    default:
++      return state;
++  }
++}
++
++// --- APP COMPONENT ---
++
+ const App: React.FC = () => {
+-  // --- State ---
+-  const [tasks, setTasks] = useState<Task[]>([]);
++  // --- State Management ---
++  const [state, dispatch] = useReducer(taskReducer, initialState);
+   const [stats, setStats] = useState<TaskStats | null>(null);
+   const [loading, setLoading] = useState(true);
+-  const [error, setError] = useState<string | null>(null);
+   
+   // UI State
+   const [filter, setFilter] = useState<'ALL' | 'ACTIVE' | 'COMPLETED'>('ALL');
+@@ -27,11 +174,10 @@ const App: React.FC = () => {
+         apiService.fetchTasks(),
+         apiService.getStats()
+       ]);
+-      setTasks(fetchedTasks);
++      dispatch({ type: 'INIT_TASKS', payload: fetchedTasks });
+       setStats(fetchedStats);
+-      setError(null);
+     } catch (err: any) {
+-      setError(err.message || 'Failed to load data');
++      console.error(err);
+     } finally {
+       setLoading(false);
+     }
+@@ -49,43 +195,112 @@ const App: React.FC = () => {
+   };
+ 
+   const handleAddTask = async (text: string, priority: Priority, desc?: string) => {
++    const tempId = crypto.randomUUID();
++    const optimisticTask: Task = {
++      id: tempId,
++      text,
++      priority,
++      description: desc,
++      isCompleted: false,
++      subtasks: [],
++      createdAt: Date.now(),
++      updatedAt: Date.now()
++    };
++
++    // 1. Optimistic Update
++    dispatch({ type: 'ADD_TASK_OPTIMISTIC', payload: { tempId, task: optimisticTask } });
++
+     try {
+-      const newTask = await apiService.createTask(text, priority, desc);
+-      setTasks(prev => [newTask, ...prev]);
++      // 2. API Call
++      const realTask = await apiService.createTask(text, priority, desc);
++      
++      // 3. Commit
++      dispatch({ type: 'COMMIT_ACTION', payload: { tempId, finalTask: realTask, actionId: tempId } });
+       await updateStats();
+-    } catch (err: any) { alert(err.message); }
++    } catch (err: any) {
++      // 4. Rollback
++      dispatch({ type: 'ROLLBACK_ACTION', payload: { actionId: tempId, error: err.message } });
++    }
++  };
++
++  const handleEditTask = async (id: string, updates: Partial<Task>) => {
++    const original = state.tasks.find(t => t.id === id);
++    if (!original) return;
++
++    const actionId = crypto.randomUUID();
++    dispatch({ type: 'UPDATE_TASK_OPTIMISTIC', payload: { id, updates, original, actionId } });
++
++    try {
++      const updated = await apiService.updateTask(id, updates);
++      dispatch({ type: 'COMMIT_ACTION', payload: { finalTask: updated, actionId } });
++      await updateStats();
++    } catch (err: any) {
++      dispatch({ type: 'ROLLBACK_ACTION', payload: { actionId, error: err.message } });
++    }
+   };
+ 
+   const handleToggleTask = async (id: string, currentStatus: boolean) => {
+-    setTasks(prev => prev.map(t => t.id === id ? { ...t, isCompleted: !currentStatus } : t));
++    const original = state.tasks.find(t => t.id === id);
++    if (!original) return;
++
++    const actionId = crypto.randomUUID();
++    dispatch({ type: 'UPDATE_TASK_OPTIMISTIC', payload: { id, updates: { isCompleted: !currentStatus }, original, actionId } });
++
+     try {
+-      await apiService.toggleTask(id, currentStatus);
++      const updated = await apiService.toggleTask(id, currentStatus);
++      dispatch({ type: 'COMMIT_ACTION', payload: { finalTask: updated, actionId } });
+       await updateStats();
+-    } catch (err: any) { refreshData(); alert(err.message); }
++    } catch (err: any) {
++      dispatch({ type: 'ROLLBACK_ACTION', payload: { actionId, error: err.message } });
++    }
++  };
++
++  const handleToggleSubtask = async (taskId: string, subtaskId: string) => {
++     const original = state.tasks.find(t => t.id === taskId);
++     if (!original) return;
++     
++     const newSubtasks = original.subtasks.map(s => s.id === subtaskId ? { ...s, isCompleted: !s.isCompleted } : s);
++     
++     const actionId = crypto.randomUUID();
++     dispatch({ type: 'UPDATE_TASK_OPTIMISTIC', payload: { id: taskId, updates: { subtasks: newSubtasks }, original, actionId } });
++
++     try {
++       const updated = await apiService.toggleSubtask(taskId, subtaskId);
++       dispatch({ type: 'COMMIT_ACTION', payload: { finalTask: updated, actionId } });
++     } catch (err: any) {
++       dispatch({ type: 'ROLLBACK_ACTION', payload: { actionId, error: err.message } });
++     }
+   };
+ 
+   const handleDeleteTask = async (id: string) => {
+     if (!confirm('Delete this task?')) return;
+-    const old = [...tasks];
+-    setTasks(prev => prev.filter(t => t.id !== id));
++    
++    const original = state.tasks.find(t => t.id === id);
++    if (!original) return;
++
++    const actionId = crypto.randomUUID();
++    dispatch({ type: 'DELETE_TASK_OPTIMISTIC', payload: { id, original, actionId } });
++
+     try {
+       await apiService.deleteTask(id);
++      dispatch({ type: 'COMMIT_ACTION', payload: { actionId } });
+       await updateStats();
+-    } catch (err: any) { setTasks(old); alert(err.message); }
++    } catch (err: any) {
++      dispatch({ type: 'ROLLBACK_ACTION', payload: { actionId, error: err.message } });
++    }
+   };
+ 
+   const handleClearCompleted = async () => {
+     if (!confirm('Clear all completed tasks?')) return;
+     try {
+       await apiService.clearCompleted();
+-      setTasks(prev => prev.filter(t => !t.isCompleted));
+-      await updateStats();
++      refreshData();
+     } catch (err: any) { alert(err.message); }
+   };
+ 
+   // --- Logic ---
+   const processedTasks = useMemo(() => {
+-    let result = [...tasks];
++    let result = [...state.tasks];
+     if (filter === 'ACTIVE') result = result.filter(t => !t.isCompleted);
+     else if (filter === 'COMPLETED') result = result.filter(t => t.isCompleted);
+ 
+@@ -99,7 +314,7 @@ const App: React.FC = () => {
+       }
+     });
+     return result;
+-  }, [tasks, filter, sort]);
++  }, [state.tasks, filter, sort]);
+ 
+   return (
+     <div className="min-h-screen py-12 px-4 sm:px-6 lg:px-8 font-sans text-slate-900 relative">
+@@ -116,7 +331,7 @@ const App: React.FC = () => {
+         </div>
+ 
+         {/* Stats */}
+-        {!loading && !error && <StatsCard stats={stats} />}
++        {!loading && !state.error && <StatsCard stats={stats} />}
+ 
+         {/* Form */}
+         <TaskForm onAdd={handleAddTask} />
+@@ -129,21 +344,24 @@ const App: React.FC = () => {
+             onFilterChange={setFilter}
+             onSortChange={setSort}
+             onClearCompleted={handleClearCompleted}
+-            hasCompleted={tasks.some(t => t.isCompleted)}
++            hasCompleted={state.tasks.some(t => t.isCompleted)}
+           />
+ 
+-          {error && (
+-            <div className="mb-6 p-4 bg-red-50 text-red-700 rounded-2xl border border-red-100 flex items-center gap-3">
+-              <span className="font-bold">Error:</span> {error}
+-              <button onClick={refreshData} className="ml-auto underline hover:text-red-900 font-medium">Retry</button>
++          {state.error && (
++            <div className="mb-6 p-4 bg-red-50 text-red-700 rounded-2xl border border-red-100 flex items-center gap-3 animate-pulse">
++              <span className="font-bold">Sync Error:</span> {state.error}
++              <button onClick={() => dispatch({ type: 'INIT_TASKS', payload: state.tasks })} className="ml-auto underline hover:text-red-900 font-medium">Dismiss</button>
+             </div>
+           )}
+ 
+           <TaskList 
+             tasks={processedTasks}
++            pendingActions={state.pendingActions}
+             loading={loading}
+             onToggle={handleToggleTask}
++            onToggleSubtask={handleToggleSubtask}
+             onDelete={handleDeleteTask}
++            onEdit={handleEditTask}
+             emptyMessage={
+               filter === 'ALL' ? "Your list is empty. Add a task above to get started!" 
+               : filter === 'ACTIVE' ? "You're all caught up! Great job." 
+@@ -154,7 +372,7 @@ const App: React.FC = () => {
+ 
+         <div className="mt-12 text-center opacity-60">
+            <p className="text-[10px] text-slate-500 font-bold tracking-[0.2em] uppercase">
+-             v2.1 • LocalStorage Database • Secure
++             v2.2 • LocalStorage Database • Secure
+            </p>
+         </div>
+       </div>
+diff --git a/src/client/components/TaskItem.tsx b/src/client/components/TaskItem.tsx
+index f0939e9..f47a464 100644
+--- a/src/client/components/TaskItem.tsx
++++ b/src/client/components/TaskItem.tsx
+@@ -1,12 +1,15 @@
+ 
+-import React from 'react';
++import React, { useState } from 'react';
+ import { Task, Priority } from '../../shared/types/task.types';
+ import { formatDate, formatTime } from '../../shared/utils/helpers';
+ 
+ interface TaskItemProps {
+   task: Task;
++  isPending?: boolean;
+   onToggle: (id: string, status: boolean) => void;
++  onToggleSubtask: (taskId: string, subtaskId: string) => void;
+   onDelete: (id: string) => void;
++  onEdit: (id: string, updates: Partial<Task>) => void;
+ }
+ 
+ const PriorityBadge: React.FC<{ priority: Priority }> = ({ priority }) => {
+@@ -23,22 +26,121 @@ const PriorityBadge: React.FC<{ priority: Priority }> = ({ priority }) => {
+   );
+ };
+ 
+-export const TaskItem: React.FC<TaskItemProps> = ({ task, onToggle, onDelete }) => {
++export const TaskItem: React.FC<TaskItemProps> = ({ task, isPending = false, onToggle, onToggleSubtask, onDelete, onEdit }) => {
++  const [isEditing, setIsEditing] = useState(false);
++  const [isAddingSubtask, setIsAddingSubtask] = useState(false);
++  const [newSubtaskText, setNewSubtaskText] = useState('');
++
++  const [editForm, setEditForm] = useState({
++    text: task.text,
++    description: task.description || '',
++    priority: task.priority
++  });
++
++  // Calculate subtask progress
++  const completedSubtasks = task.subtasks?.filter(s => s.isCompleted).length || 0;
++  const totalSubtasks = task.subtasks?.length || 0;
++  const progressPercent = totalSubtasks > 0 ? Math.round((completedSubtasks / totalSubtasks) * 100) : 0;
++
++  const handleSave = () => {
++    if (!editForm.text.trim()) return;
++    onEdit(task.id, {
++      text: editForm.text,
++      description: editForm.description,
++      priority: editForm.priority
++    });
++    setIsEditing(false);
++  };
++
++  const handleCancel = () => {
++    setEditForm({
++      text: task.text,
++      description: task.description || '',
++      priority: task.priority
++    });
++    setIsEditing(false);
++  };
++
++  const handleAddSubtask = () => {
++    if (!newSubtaskText.trim()) return;
++    const newSubTask = {
++      id: crypto.randomUUID(),
++      text: newSubtaskText,
++      isCompleted: false
++    };
++    onEdit(task.id, {
++      subtasks: [...(task.subtasks || []), newSubTask]
++    });
++    setNewSubtaskText('');
++    setIsAddingSubtask(false);
++  };
++
++  if (isEditing) {
++    return (
++      <div className="bg-white border-2 border-indigo-500/20 rounded-2xl p-4 shadow-xl shadow-indigo-100/20 relative z-20">
++        <div className="space-y-3">
++          <input
++            type="text"
++            value={editForm.text}
++            onChange={e => setEditForm({ ...editForm, text: e.target.value })}
++            className="w-full text-base font-medium text-slate-800 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
++            autoFocus
++          />
++          <textarea
++            value={editForm.description}
++            onChange={e => setEditForm({ ...editForm, description: e.target.value })}
++            placeholder="Add description..."
++            className="w-full text-sm text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 resize-none"
++            rows={2}
++          />
++          <div className="flex justify-between items-center pt-2">
++            <div className="flex gap-1 bg-slate-100 p-1 rounded-lg">
++               {Object.values(Priority).map(p => (
++                 <button
++                   key={p}
++                   onClick={() => setEditForm({ ...editForm, priority: p })}
++                   className={`px-3 py-1 text-[10px] font-bold uppercase rounded-md transition-colors ${
++                     editForm.priority === p ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'
++                   }`}
++                 >
++                   {p}
++                 </button>
++               ))}
++            </div>
++            <div className="flex gap-2">
++              <button onClick={handleCancel} className="text-xs font-bold text-slate-500 hover:bg-slate-100 px-3 py-1.5 rounded-lg">Cancel</button>
++              <button onClick={handleSave} className="text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 px-4 py-1.5 rounded-lg shadow-md shadow-indigo-200">Save</button>
++            </div>
++          </div>
++        </div>
++      </div>
++    );
++  }
++
+   return (
+     <div className={`group relative bg-white border rounded-2xl p-4 transition-all duration-300 ${
+       task.isCompleted 
+         ? 'opacity-60 border-slate-100 bg-slate-50' 
+         : 'border-slate-200/60 shadow-sm hover:shadow-lg hover:-translate-y-0.5 hover:border-indigo-200'
+-    }`}>
++    } ${isPending ? 'opacity-70 grayscale-[0.2]' : ''}`}>
++      
++      {/* Loading Overlay/Indicator */}
++      {isPending && (
++        <div className="absolute top-2 right-2">
++          <div className="w-3 h-3 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
++        </div>
++      )}
++
+       <div className="flex items-start gap-4">
+         {/* Checkbox */}
+         <button
+           onClick={() => onToggle(task.id, task.isCompleted)}
++          disabled={isPending}
+           className={`mt-1 flex-shrink-0 w-6 h-6 rounded-full border-[2px] flex items-center justify-center transition-all duration-300 ${
+             task.isCompleted
+               ? 'bg-gradient-to-br from-emerald-400 to-emerald-600 border-transparent text-white scale-110'
+               : 'border-slate-300 hover:border-indigo-400 hover:bg-indigo-50 text-transparent'
+-          }`}
++          } ${isPending ? 'cursor-not-allowed opacity-50' : ''}`}
+         >
+           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+             <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+@@ -46,23 +148,86 @@ export const TaskItem: React.FC<TaskItemProps> = ({ task, onToggle, onDelete })
+         </button>
+ 
+         {/* Content */}
+-        <div className="flex-1 min-w-0">
++        <div className="flex-1 min-w-0 pr-16">
+           <div className="flex items-center gap-2 mb-1 flex-wrap">
+-            <h4 className={`text-base font-medium truncate pr-8 transition-colors ${
++            <h4 className={`text-base font-medium truncate max-w-full transition-colors ${
+               task.isCompleted ? 'text-slate-400 line-through decoration-slate-300' : 'text-slate-800'
+             }`}>
+               {task.text}
+             </h4>
+             <PriorityBadge priority={task.priority} />
++            
++            {/* Subtask Progress Badge */}
++            {totalSubtasks > 0 && (
++              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md flex items-center gap-1 ${
++                completedSubtasks === totalSubtasks 
++                ? 'bg-emerald-100 text-emerald-700' 
++                : 'bg-slate-100 text-slate-500'
++              }`}>
++                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
++                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
++                </svg>
++                {completedSubtasks}/{totalSubtasks}
++              </span>
++            )}
+           </div>
+           
+           {task.description && (
+-            <p className={`text-sm mb-2 ${task.isCompleted ? 'text-slate-300' : 'text-slate-500'}`}>
++            <p className={`text-sm mb-2 break-words ${task.isCompleted ? 'text-slate-300' : 'text-slate-500'}`}>
+               {task.description}
+             </p>
+           )}
++
++          {/* Subtasks List */}
++          {(task.subtasks?.length > 0 || isAddingSubtask) && !task.isCompleted && (
++            <div className="mt-3 space-y-1 mb-2">
++              {task.subtasks.map(sub => (
++                <div key={sub.id} className="flex items-center gap-2 group/sub">
++                  <button 
++                    onClick={() => onToggleSubtask(task.id, sub.id)}
++                    disabled={isPending}
++                    className={`w-4 h-4 rounded border flex items-center justify-center transition-all ${
++                      sub.isCompleted 
++                      ? 'bg-indigo-500 border-indigo-500 text-white' 
++                      : 'border-slate-300 hover:border-indigo-400 bg-white'
++                    } ${isPending ? 'cursor-not-allowed opacity-50' : ''}`}
++                  >
++                    {sub.isCompleted && <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>}
++                  </button>
++                  <span className={`text-xs transition-colors ${sub.isCompleted ? 'text-slate-400 line-through' : 'text-slate-600'}`}>
++                    {sub.text}
++                  </span>
++                </div>
++              ))}
++            </div>
++          )}
+           
+-          <div className="flex items-center gap-3 text-xs text-slate-400 font-medium">
++          {/* Add Subtask Input */}
++          {isAddingSubtask ? (
++             <div className="flex items-center gap-2 mt-2">
++               <input
++                 type="text"
++                 value={newSubtaskText}
++                 onChange={(e) => setNewSubtaskText(e.target.value)}
++                 placeholder="New subtask..."
++                 className="text-xs border rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-indigo-500 w-40"
++                 autoFocus
++                 onKeyDown={(e) => e.key === 'Enter' && handleAddSubtask()}
++               />
++               <button onClick={handleAddSubtask} className="text-xs font-bold text-white bg-indigo-500 px-2 py-1 rounded-lg">Add</button>
++               <button onClick={() => setIsAddingSubtask(false)} className="text-xs text-slate-500 px-2">Cancel</button>
++             </div>
++          ) : !task.isCompleted && (
++             <button 
++               onClick={() => setIsAddingSubtask(true)}
++               disabled={isPending}
++               className={`text-[10px] font-bold text-indigo-500 hover:text-indigo-700 hover:underline mt-1 flex items-center gap-1 ${isPending ? 'opacity-50 pointer-events-none' : ''}`}
++             >
++               + Add subtask
++             </button>
++          )}
++
++          <div className="flex items-center gap-3 text-xs text-slate-400 font-medium mt-2">
+             <span>{formatDate(task.createdAt)}</span>
+             {task.isCompleted && task.completedAt && (
+               <span className="text-emerald-600/70 bg-emerald-50 px-1.5 py-0.5 rounded-md">
+@@ -72,15 +237,29 @@ export const TaskItem: React.FC<TaskItemProps> = ({ task, onToggle, onDelete })
+           </div>
+         </div>
+ 
+-        {/* Delete Action */}
+-        <button
+-          onClick={() => onDelete(task.id)}
+-          className="absolute top-4 right-4 text-slate-300 hover:text-red-500 p-2 rounded-xl hover:bg-red-50 transition-all opacity-0 group-hover:opacity-100 transform hover:scale-110"
+-        >
+-          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+-          </svg>
+-        </button>
++        {/* Actions */}
++        <div className={`absolute top-4 right-4 flex gap-1 transition-all duration-200 transform translate-x-2 ${
++           isPending ? 'opacity-0' : 'opacity-0 group-hover:opacity-100 group-hover:translate-x-0'
++        }`}>
++          <button
++            onClick={() => setIsEditing(true)}
++            className="text-slate-400 hover:text-indigo-600 p-2 rounded-xl hover:bg-indigo-50 transition-colors"
++            title="Edit"
++          >
++            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
++              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
++            </svg>
++          </button>
++          <button
++            onClick={() => onDelete(task.id)}
++            className="text-slate-400 hover:text-red-500 p-2 rounded-xl hover:bg-red-50 transition-colors"
++            title="Delete"
++          >
++            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
++              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
++            </svg>
++          </button>
++        </div>
+       </div>
+     </div>
+   );
+diff --git a/src/client/components/TaskList.tsx b/src/client/components/TaskList.tsx
+index 38690f3..521a88b 100644
+--- a/src/client/components/TaskList.tsx
++++ b/src/client/components/TaskList.tsx
+@@ -2,16 +2,29 @@
+ import React from 'react';
+ import { Task } from '../../shared/types/task.types';
+ import { TaskItem } from './TaskItem';
++import { PendingAction } from '../App';
+ 
+ interface TaskListProps {
+   tasks: Task[];
++  pendingActions?: PendingAction[];
+   loading: boolean;
+   onToggle: (id: string, s: boolean) => void;
++  onToggleSubtask: (taskId: string, subtaskId: string) => void;
+   onDelete: (id: string) => void;
++  onEdit: (id: string, updates: Partial<Task>) => void;
+   emptyMessage: string;
+ }
+ 
+-export const TaskList: React.FC<TaskListProps> = ({ tasks, loading, onToggle, onDelete, emptyMessage }) => {
++export const TaskList: React.FC<TaskListProps> = ({ 
++  tasks, 
++  pendingActions = [], 
++  loading, 
++  onToggle, 
++  onToggleSubtask, 
++  onDelete, 
++  onEdit, 
++  emptyMessage 
++}) => {
+   if (loading) {
+     return (
+       <div className="space-y-4 py-4">
+@@ -38,14 +51,20 @@ export const TaskList: React.FC<TaskListProps> = ({ tasks, loading, onToggle, on
+ 
+   return (
+     <div className="space-y-3">
+-      {tasks.map((task) => (
+-        <TaskItem
+-          key={task.id}
+-          task={task}
+-          onToggle={onToggle}
+-          onDelete={onDelete}
+-        />
+-      ))}
++      {tasks.map((task) => {
++        const isPending = pendingActions.some(a => a.taskId === task.id);
++        return (
++          <TaskItem
++            key={task.id}
++            task={task}
++            isPending={isPending}
++            onToggle={onToggle}
++            onToggleSubtask={onToggleSubtask}
++            onDelete={onDelete}
++            onEdit={onEdit}
++          />
++        );
++      })}
+     </div>
+   );
+ };
+diff --git a/src/client/services/apiService.ts b/src/client/services/apiService.ts
+index c53d3aa..0800343 100644
+--- a/src/client/services/apiService.ts
++++ b/src/client/services/apiService.ts
+@@ -21,20 +21,32 @@ export const apiService = {
+   async createTask(text: string, priority: Priority, description?: string): Promise<Task> {
+     const payload: CreateTaskDTO = { text, priority, description };
+     const response = await TaskController.createTask(payload);
+-    if (!response.success || !response.data) throw new Error(response.error);
++    if (!response.success || !response.data) throw new Error(response.error || 'Failed to create task');
++    return response.data;
++  },
++
++  async updateTask(id: string, updates: UpdateTaskDTO): Promise<Task> {
++    const response = await TaskController.updateTask(id, updates);
++    if (!response.success || !response.data) throw new Error(response.error || 'Failed to update task');
+     return response.data;
+   },
+ 
+   async toggleTask(id: string, currentStatus: boolean): Promise<Task> {
+     const payload: UpdateTaskDTO = { isCompleted: !currentStatus };
+     const response = await TaskController.updateTask(id, payload);
+-    if (!response.success || !response.data) throw new Error(response.error);
++    if (!response.success || !response.data) throw new Error(response.error || 'Failed to toggle task');
++    return response.data;
++  },
++
++  async toggleSubtask(taskId: string, subtaskId: string): Promise<Task> {
++    const response = await TaskController.toggleSubtask(taskId, subtaskId);
++    if (!response.success || !response.data) throw new Error(response.error || 'Failed to toggle subtask');
+     return response.data;
+   },
+ 
+   async deleteTask(id: string): Promise<void> {
+     const response = await TaskController.deleteTask(id);
+-    if (!response.success) throw new Error(response.error);
++    if (!response.success) throw new Error(response.error || 'Failed to delete task');
+   },
+ 
+   async clearCompleted(): Promise<number> {
+diff --git a/src/server/controllers/taskController.ts b/src/server/controllers/taskController.ts
+index 4028278..fa4956d 100644
+--- a/src/server/controllers/taskController.ts
++++ b/src/server/controllers/taskController.ts
+@@ -63,6 +63,17 @@ export const TaskController = {
+     }
+   },
+ 
++  async toggleSubtask(taskId: string, subtaskId: string): Promise<ApiResponse<Task>> {
++    await delay(150);
++    try {
++      const task = taskService.toggleSubtask(taskId, subtaskId);
++      if (!task) return this._response(false, undefined, 'Task or subtask not found', 404);
++      return this._response(true, task);
++    } catch (e) {
++      return this._response(false, undefined, 'Subtask toggle failed', 500);
++    }
++  },
++
+   async deleteTask(id: string): Promise<ApiResponse<null>> {
+     await delay(200);
+     try {
+diff --git a/src/shared/types/task.types.ts b/src/shared/types/task.types.ts
+index 00b22be..ff11db8 100644
+--- a/src/shared/types/task.types.ts
++++ b/src/shared/types/task.types.ts
+@@ -23,6 +23,15 @@ export enum SortOption {
+   PRIORITY_ASC = 'PRIORITY_ASC',
+ }
+ 
++/**
++ * Subtask item structure.
++ */
++export interface SubTask {
++  id: string;
++  text: string;
++  isCompleted: boolean;
++}
++
+ /**
+  * The core Task object.
+  */
+@@ -32,6 +41,7 @@ export interface Task {
+   description?: string;
+   isCompleted: boolean;
+   priority: Priority;
++  subtasks: SubTask[];
+   createdAt: number;
+   updatedAt: number;
+   completedAt?: number;
+@@ -79,10 +89,11 @@ export interface UpdateTaskDTO {
+   isCompleted?: boolean;
+   priority?: Priority;
+   description?: string;
++  subtasks?: SubTask[];
+ }
+ 
+ /**
+- * Log entry for the backend logger.
++ * System Log entry structure used in server logs.
+  */
+ export interface SystemLog {
+   id: string;
