@@ -1,43 +1,24 @@
-task_description: |
-Task: advanced-task-filtering
-SimplyDone FilterBar needs advanced query composition. Implement chainable filter conditions with AND/OR logic operators and persist filter presets to jsonDatabase.
-Instructions:
-Goal:
-- Create FilterQuery type supporting condition composition
-- Implement AND/OR logic operators for combining
-- Build filterService with buildQuery and executeQuery
-- Persist FilterPresets to jsonDatabase adapter
-- Extend taskService with filterTasksByQuery method
-- Create FilterComposer component for UI interaction
-Input:
-- Filter conditions: field, operator, value pairs
-- Multiple conditions combined with AND or OR
-- Filter presets saved as JSON objects
-- Example: { field: "priority", operator: "equals" }
+task_description:
+task-005
+Implement advanced task filtering with complex query composition, allowing users to chain multiple filter conditions with AND/OR logic operators and persist filter presets.
 
-Output:
-- Filtered tasks array from taskService method
-- Persisted presets retrievable from jsonDatabase
-- FilterComposer displays active filters and controls
-- Success: all 6 tests pass with coverage
+requirements:
 
-Constraints:
-- Invalid operators must fail gracefully
-- AND/OR operators combine conditions correctly
-- Presets survive browser session reloads
-- Performance: 1000+ tasks filter under 100ms
-- Integrate with existing TaskForm and FilterBar
+Create FilterQuery type with conditions array
+Add FilterCondition type supporting field, operator, value
+Create filterService with buildQuery and executeQuery
+Implement FilterPreset persistence in jsonDatabase
+Add taskService.filterTasksByQuery method chaining
+Create FilterComposer component with operator selection
+Success_criteria:
 
-What will be Tested:
-- FilterQuery type with field/operator/value
-- buildQuery constructs composite queries
-- executeQuery filters with AND logic
-- executeQuery filters with OR logic
-- FilterPreset saves and loads correctly
-- filterTasksByQuery chains with apiService
-- Invalid operators rejected gracefully
-- Empty conditions return all tasks
-- Large result sets filter within timeout
+All 6 tests pass
+Users can chain multiple filter conditions
+AND/OR logic operators work correctly
+Filter presets save and load from storage
+Complex queries execute without performance issues
+Filtering respects all task properties
+Query state persists across session reloads
 
 author_name: kareemblessed
 author_email: blessedronan@gmail.com
