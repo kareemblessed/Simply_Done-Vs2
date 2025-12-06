@@ -20,7 +20,7 @@ COPY . .
 RUN npm run build
 
 # Make the test runner script executable (BEFORE switching user)
-RUN chmod +x run_tests.sh
+RUN chmod +x run-tests.sh
 
 # Create a non-root user for security
 RUN addgroup -g 1001 appgroup && \
@@ -31,4 +31,4 @@ RUN addgroup -g 1001 appgroup && \
 USER appuser
 
 # Set the entrypoint to your test runner
-ENTRYPOINT ["./run_tests.sh"]
+ENTRYPOINT ["./run-tests.sh"]
