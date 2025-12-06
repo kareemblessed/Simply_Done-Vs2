@@ -1,0 +1,28 @@
+
+task_description: task-009
+Implement observer pattern in taskService where App.tsx, FilterBar, and StatsCard subscribe to selective task changes and mutations.
+requirements:
+
+Create TaskObserver interface with update method
+Add observer subscription in taskService methods
+Implement selective change detection in observers
+Extend apiService response handlers with notifications
+Update FilterBar to subscribe to task changes
+Update StatsCard to subscribe to completion
+
+Success_criteria:
+
+All 6 tests pass
+Observers subscribe to taskService correctly
+Create operation notifies all observers
+Update operation notifies relevant observers
+Delete operation notifies all observers
+Selective updates prevent unnecessary rerenders
+Multiple observers receive notifications simultaneously
+
+author_name: kareemblessed
+author_email: blessedronan@gmail.com
+difficulty: hard
+category: Architecture
+tags: react, observers, reactivity
+parser_name: node
