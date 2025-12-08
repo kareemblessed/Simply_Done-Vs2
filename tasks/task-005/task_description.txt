@@ -10,15 +10,19 @@ Create filterService with buildQuery and executeQuery
 Implement FilterPreset persistence in jsonDatabase
 Add taskService.filterTasksByQuery method chaining
 Create FilterComposer component with operator selection
+For this task you will have to create new new files: src/server/services/filterService.ts and src/client/components/FilterComposer.tsx
+
 Success_criteria:
 
-All 6 tests pass
+All 9 tests should pass
 Users can chain multiple filter conditions
 AND/OR logic operators work correctly
-Filter presets save and load from storage
-Complex queries execute without performance issues
-Filtering respects all task properties
-Query state persists across session reloads
+Filter presets save and retrieves from storage
+Complex queries run without any performance problems
+Filtering honors all the properties of the tasks
+On reloading of session, query state is not lost
+All the invalid operators caught properly
+Empty filter conditions return all the tasks
 
 author_name: kareemblessed
 author_email: blessedronan@gmail.com
