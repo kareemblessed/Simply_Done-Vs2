@@ -76,7 +76,6 @@ async function runTests() {
     if (createdTask && createdTag) {
       const updated = await taskService.removeTagFromTask(createdTask.id, createdTag.id);
       assert(updated?.tags.some(t => t.id === createdTag!.id) === false, 'taskService.removeTagFromTask removes tag from task');
-      // createdTask still has 'Urgent' tag from Test 6 logic conceptually, but 'updated' is the source of truth
     }
   } catch (e) { console.error(e); failCount++; }
 
