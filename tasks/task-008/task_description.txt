@@ -1,24 +1,30 @@
 
-task_description: task-008
+task_description: 
+
+task-008
 Integrate taskValidator rules into TaskForm component with real-time error display on blur and change events before submission.
+
 requirements:
 
-Create FormState type mirroring Task schema
-Integrate taskValidator rules into form submission
-Add real-time validation on field blur events
-Add real-time validation on field change events
-Display validation errors inline in form
-Prevent submission with invalid data
+-Create FormState type mirroring Task schema
+-Integrate taskValidator rules into form submission
+-Add real-time validation on field blur events
+-Add real-time validation on field change events
+-Display validation errors inline in form
+-Prevent submission with invalid data
 
 Success_criteria:
 
-All 6 tests pass
-Real-time errors display on blur
-Real-time errors display on change
-Validation errors display inline correctly
-Invalid form prevents apiService submission
-FormState tracks all validation errors
-Errors clear when input corrected
+-All the 9 tests should pass.
+-Real-time errors should be visibly displayed on blur events
+-Real-time errors display on change events
+-The validation errors present well in line with the code
+-Invalid form does not allow the submission of apiService
+-FormState keeps records of every validation error
+-Errors clear when input corrected
+-Rules of taskValidator validation are applicable
+-Form state coincides with Task type
+-To solve the task, create one new file: src/client/hooks/useFormValidation.ts
 
 author_name: kareemblessed
 author_email: blessedronan@gmail.com
