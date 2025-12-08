@@ -1,1 +1,0 @@
-// File deleted. Main App is in src/client/App.tsx
