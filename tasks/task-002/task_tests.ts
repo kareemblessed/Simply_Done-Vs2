@@ -1,97 +1,103 @@
 
 import { taskService } from '../../src/server/services/taskService';
-import { Priority } from '../../src/shared/types/task.types';
-
-// Mock localStorage if not available (Node environment)
-if (typeof localStorage === 'undefined') {
-  (globalThis as any).localStorage = {
-    getItem: () => null,
-    setItem: () => {},
-    removeItem: () => {},
-    clear: () => {}
-  };
-}
+import { TaskController } from '../../src/server/controllers/taskController';
+import { apiService } from '../../src/client/services/apiService';
+import { Priority, Task } from '../../src/shared/types/task.types';
+import { getDaysRemaining, isOverdue } from '../../src/shared/utils/helpers';
 
 let passCount = 0;
 let failCount = 0;
 
-function test(name: string, fn: () => void) {
-  try {
-    fn();
-    console.log(`✅ ${name}`);
+function assert(condition: boolean, message: string) {
+  if (condition) {
+    console.log(`✅ ${message}`);
     passCount++;
-  } catch (e: any) {
-    console.error(`❌ ${name}: ${e.message}`);
+  } else {
+    console.error(`❌ ${message}`);
     failCount++;
   }
 }
 
-console.log('\n=== Task-002 Tests: Due Dates ===\n');
+console.log('\n=== Task-002 Tests: Due Date Functionality ===\n');
 
-// Test 1: New tasks can have optional dueDate field
-test('Test 1: New tasks can have optional dueDate field', () => {
-  const dateStr = new Date().toISOString();
-  const task = taskService.create({ 
-    text: 'Task with date', 
-    priority: Priority.MEDIUM,
-    dueDate: dateStr
-  });
-  
-  if (task.dueDate !== dateStr) throw new Error('dueDate was not saved correctly');
-  
-  const taskNoDate = taskService.create({ 
-    text: 'Task no date', 
-    priority: Priority.LOW 
-  });
-  
-  if (taskNoDate.dueDate !== undefined) throw new Error('dueDate should be undefined if not provided');
-});
+async function runTests() {
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowTs = tomorrow.getTime();
 
-// Test 2: updateDueDate method exists
-test('Test 2: updateDueDate method exists', () => {
-  if (typeof taskService.updateDueDate !== 'function') {
-    throw new Error('taskService.updateDueDate is not defined');
-  }
-});
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  const yesterdayTs = yesterday.getTime();
 
-// Test 3: updateDueDate successfully changes task due date
-test('Test 3: updateDueDate successfully changes task due date', () => {
-  const task = taskService.create({ text: 'Update Date Test', priority: Priority.HIGH });
-  const newDate = new Date('2025-12-25').toISOString();
-  
-  const updated = taskService.updateDueDate(task.id, newDate);
-  
-  if (!updated) throw new Error('Returned null');
-  if (updated.dueDate !== newDate) throw new Error('Date was not updated');
-});
-
-// Test 4: Tasks without due dates remain valid
-test('Test 4: Tasks without due dates remain valid', () => {
-  const task = taskService.create({ text: 'No Date Validity', priority: Priority.LOW });
-  const retrieved = taskService.getById(task.id);
-  
-  if (!retrieved) throw new Error('Task not found');
-  if (retrieved.dueDate) throw new Error('Unexpected due date found');
-});
-
-// Test 5: Invalid task ID returns null when updating due date
-test('Test 5: Invalid task ID returns null', () => {
-  const result = taskService.updateDueDate('non-existent-id', new Date().toISOString());
-  if (result !== null) throw new Error('Should return null for invalid ID');
-});
-
-// Test 6: Date validation
-test('Test 6: Date validation prevents invalid dates', () => {
-  const task = taskService.create({ text: 'Validation Test', priority: Priority.MEDIUM });
+  // Test 1: Task type includes optional dueDate field (implicitly tested by creation)
   try {
-    const validDate = new Date().toISOString();
-    const result = taskService.updateDueDate(task.id, validDate);
-    if (!result) throw new Error('Update failed with valid date');
-  } catch (e) {
-    throw e;
-  }
-});
+    const task = await taskService.create({ 
+      text: 'Due Date Task', 
+      priority: Priority.MEDIUM,
+      dueDate: tomorrowTs 
+    });
+    assert(task.dueDate === tomorrowTs, 'taskService.create stores dueDate correctly');
+  } catch (e) { console.error(e); failCount++; }
 
-console.log(`\n${passCount}/${passCount + failCount} passed\n`);
-if (failCount > 0) (process as any).exit(1);
-(process as any).exit(0);
+  // Test 2: taskService.updateDueDate modifies task date
+  try {
+    const task = await taskService.create({ text: 'Update Date', priority: Priority.LOW });
+    const updated = await taskService.updateDueDate(task.id, yesterdayTs);
+    assert(updated !== null && updated.dueDate === yesterdayTs, 'taskService.updateDueDate modifies task date');
+  } catch (e) { console.error(e); failCount++; }
+
+  // Test 3: TaskController exposes updateDueDate endpoint
+  try {
+    const task = await taskService.create({ text: 'Controller Date', priority: Priority.HIGH });
+    const response = await TaskController.updateDueDate(task.id, tomorrowTs);
+    assert(response.success && response.data?.dueDate === tomorrowTs, 'TaskController exposes updateDueDate endpoint');
+  } catch (e) { console.error(e); failCount++; }
+
+  // Test 4: apiService.updateDueDate calls controller correctly
+  try {
+    const task = await taskService.create({ text: 'API Date', priority: Priority.MEDIUM });
+    const updated = await apiService.updateDueDate(task.id, yesterdayTs);
+    assert(updated.dueDate === yesterdayTs, 'apiService.updateDueDate calls controller correctly');
+  } catch (e) { console.error(e); failCount++; }
+
+  // Test 5: Helper calculates days remaining correctly
+  try {
+    const future = new Date();
+    future.setDate(future.getDate() + 5);
+    const diff = getDaysRemaining(future.getTime());
+    // Allow small margin or exact match depending on time of execution, usually 5
+    assert(diff === 5 || diff === 4, 'Days remaining calculated correctly (approx 5 days)');
+  } catch (e) { console.error(e); failCount++; }
+
+  // Test 6: Helper identifies overdue tasks
+  try {
+    const past = new Date();
+    past.setDate(past.getDate() - 2);
+    assert(isOverdue(past.getTime()) === true, 'Overdue task identified correctly');
+  } catch (e) { console.error(e); failCount++; }
+
+  // Test 7: Helper identifies non-overdue tasks
+  try {
+    const future = new Date();
+    future.setDate(future.getDate() + 2);
+    assert(isOverdue(future.getTime()) === false, 'Future task is not overdue');
+  } catch (e) { console.error(e); failCount++; }
+
+  // Test 8: apiService.createTask accepts due date
+  try {
+    const task = await apiService.createTask('API Create with Date', Priority.HIGH, 'Desc', tomorrowTs);
+    assert(task.dueDate === tomorrowTs, 'apiService.createTask accepts due date');
+  } catch (e) { console.error(e); failCount++; }
+
+  // Test 9: Handling invalid date (null removal)
+  try {
+    const task = await taskService.create({ text: 'Null Date', priority: Priority.LOW, dueDate: tomorrowTs });
+    const updated = await taskService.updateDueDate(task.id, null);
+    assert(updated?.dueDate === undefined, 'Can remove due date (set to null/undefined)');
+  } catch (e) { console.error(e); failCount++; }
+
+  console.log(`\n${passCount}/${passCount + failCount} passed\n`);
+  if (failCount > 0) (process as any).exit(1);
+}
+
+runTests();
