@@ -1,0 +1,730 @@
+diff --git a/src/client/App.tsx b/src/client/App.tsx
+index bcdbba9..8834d74 100644
+--- a/src/client/App.tsx
++++ b/src/client/App.tsx
+@@ -20,9 +20,9 @@ const App: React.FC = () => {
+   const [sort, setSort] = useState<SortOption>(SortOption.NEWEST);
+ 
+   // --- Actions ---
+-  const refreshData = async () => {
++  const fetchData = async () => {
+     try {
+-      setLoading(true);
++      // setLoading(true); // Optional: only load on first mount
+       const [fetchedTasks, fetchedStats] = await Promise.all([
+         apiService.fetchTasks(),
+         apiService.getStats()
+@@ -38,48 +38,50 @@ const App: React.FC = () => {
+   };
+ 
+   useEffect(() => {
+-    refreshData();
++    fetchData();
+   }, []);
+ 
+-  const updateStats = async () => {
++  const handleAddTask = async (text: string, priority: Priority, desc?: string) => {
+     try {
+-      const newStats = await apiService.getStats();
+-      setStats(newStats);
+-    } catch (e) { console.error(e); }
++      await apiService.createTask(text, priority, desc);
++      await fetchData(); // Refresh data manually since observer is gone
++    } catch (err: any) { alert(err.message); }
+   };
+ 
+-  const handleAddTask = async (text: string, priority: Priority, desc?: string) => {
++  const handleEditTask = async (id: string, updates: Partial<Task>) => {
+     try {
+-      const newTask = await apiService.createTask(text, priority, desc);
+-      setTasks(prev => [newTask, ...prev]);
+-      await updateStats();
++      await apiService.updateTask(id, updates);
++      await fetchData();
+     } catch (err: any) { alert(err.message); }
+   };
+ 
+   const handleToggleTask = async (id: string, currentStatus: boolean) => {
+-    setTasks(prev => prev.map(t => t.id === id ? { ...t, isCompleted: !currentStatus } : t));
+     try {
+       await apiService.toggleTask(id, currentStatus);
+-      await updateStats();
+-    } catch (err: any) { refreshData(); alert(err.message); }
++      await fetchData();
++    } catch (err: any) { alert(err.message); }
++  };
++
++  const handleToggleSubtask = async (taskId: string, subtaskId: string) => {
++     try {
++       await apiService.toggleSubtask(taskId, subtaskId);
++       await fetchData();
++     } catch (err: any) { alert(err.message); }
+   };
+ 
+   const handleDeleteTask = async (id: string) => {
+     if (!confirm('Delete this task?')) return;
+-    const old = [...tasks];
+-    setTasks(prev => prev.filter(t => t.id !== id));
+     try {
+       await apiService.deleteTask(id);
+-      await updateStats();
+-    } catch (err: any) { setTasks(old); alert(err.message); }
++      await fetchData();
++    } catch (err: any) { alert(err.message); }
+   };
+ 
+   const handleClearCompleted = async () => {
+     if (!confirm('Clear all completed tasks?')) return;
+     try {
+       await apiService.clearCompleted();
+-      setTasks(prev => prev.filter(t => !t.isCompleted));
+-      await updateStats();
++      await fetchData();
+     } catch (err: any) { alert(err.message); }
+   };
+ 
+@@ -135,7 +137,7 @@ const App: React.FC = () => {
+           {error && (
+             <div className="mb-6 p-4 bg-red-50 text-red-700 rounded-2xl border border-red-100 flex items-center gap-3">
+               <span className="font-bold">Error:</span> {error}
+-              <button onClick={refreshData} className="ml-auto underline hover:text-red-900 font-medium">Retry</button>
++              <button onClick={fetchData} className="ml-auto underline hover:text-red-900 font-medium">Retry</button>
+             </div>
+           )}
+ 
+@@ -143,7 +145,9 @@ const App: React.FC = () => {
+             tasks={processedTasks}
+             loading={loading}
+             onToggle={handleToggleTask}
++            onToggleSubtask={handleToggleSubtask}
+             onDelete={handleDeleteTask}
++            onEdit={handleEditTask}
+             emptyMessage={
+               filter === 'ALL' ? "Your list is empty. Add a task above to get started!" 
+               : filter === 'ACTIVE' ? "You're all caught up! Great job." 
+@@ -154,7 +158,7 @@ const App: React.FC = () => {
+ 
+         <div className="mt-12 text-center opacity-60">
+            <p className="text-[10px] text-slate-500 font-bold tracking-[0.2em] uppercase">
+-             v2.1 • LocalStorage Database • Secure
++             v3.0 • Async Storage • IndexedDB + LZW
+            </p>
+         </div>
+       </div>
+diff --git a/src/client/services/apiService.ts b/src/client/services/apiService.ts
+index c53d3aa..4a5afab 100644
+--- a/src/client/services/apiService.ts
++++ b/src/client/services/apiService.ts
+@@ -25,6 +25,12 @@ export const apiService = {
+     return response.data;
+   },
+ 
++  async updateTask(id: string, updates: UpdateTaskDTO): Promise<Task> {
++    const response = await TaskController.updateTask(id, updates);
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
+   async toggleTask(id: string, currentStatus: boolean): Promise<Task> {
+     const payload: UpdateTaskDTO = { isCompleted: !currentStatus };
+     const response = await TaskController.updateTask(id, payload);
+@@ -32,6 +38,12 @@ export const apiService = {
+     return response.data;
+   },
+ 
++  async toggleSubtask(taskId: string, subtaskId: string): Promise<Task> {
++    const response = await TaskController.toggleSubtask(taskId, subtaskId);
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
+   async deleteTask(id: string): Promise<void> {
+     const response = await TaskController.deleteTask(id);
+     if (!response.success) throw new Error(response.error);
+diff --git a/src/server/controllers/taskController.ts b/src/server/controllers/taskController.ts
+index 4028278..ccf0490 100644
+--- a/src/server/controllers/taskController.ts
++++ b/src/server/controllers/taskController.ts
+@@ -25,9 +25,9 @@ export const TaskController = {
+   },
+ 
+   async getTasks(): Promise<ApiResponse<Task[]>> {
+-    await delay(300); // Simulate network
++    await delay(300); 
+     try {
+-      const tasks = taskService.getAll();
++      const tasks = await taskService.getAll();
+       return this._response(true, tasks);
+     } catch (e) {
+       return this._response(false, undefined, 'Internal Server Error', 500);
+@@ -41,7 +41,7 @@ export const TaskController = {
+     if (error) return this._response(false, undefined, error, 400);
+ 
+     try {
+-      const task = taskService.create(dto);
++      const task = await taskService.create(dto);
+       return this._response(true, task, undefined, 201);
+     } catch (e) {
+       return this._response(false, undefined, 'Creation failed', 500);
+@@ -55,7 +55,7 @@ export const TaskController = {
+     if (error) return this._response(false, undefined, error, 400);
+ 
+     try {
+-      const task = taskService.update(id, dto);
++      const task = await taskService.update(id, dto);
+       if (!task) return this._response(false, undefined, 'Task not found', 404);
+       return this._response(true, task);
+     } catch (e) {
+@@ -63,10 +63,21 @@ export const TaskController = {
+     }
+   },
+ 
++  async toggleSubtask(taskId: string, subtaskId: string): Promise<ApiResponse<Task>> {
++    await delay(150);
++    try {
++      const task = await taskService.toggleSubtask(taskId, subtaskId);
++      if (!task) return this._response(false, undefined, 'Task or subtask not found', 404);
++      return this._response(true, task);
++    } catch (e) {
++      return this._response(false, undefined, 'Subtask toggle failed', 500);
++    }
++  },
++
+   async deleteTask(id: string): Promise<ApiResponse<null>> {
+     await delay(200);
+     try {
+-      const success = taskService.delete(id);
++      const success = await taskService.delete(id);
+       if (!success) return this._response(false, undefined, 'Task not found', 404);
+       return this._response(true, null, undefined, 204);
+     } catch (e) {
+@@ -77,7 +88,7 @@ export const TaskController = {
+   async clearCompleted(): Promise<ApiResponse<{ count: number }>> {
+     await delay(400);
+     try {
+-      const count = taskService.clearCompleted();
++      const count = await taskService.clearCompleted();
+       return this._response(true, { count });
+     } catch (e) {
+       return this._response(false, undefined, 'Clear failed', 500);
+@@ -85,9 +96,8 @@ export const TaskController = {
+   },
+ 
+   async getStats(): Promise<ApiResponse<TaskStats>> {
+-    // Stats usually fast
+     try {
+-      const stats = taskService.getStats();
++      const stats = await taskService.getStats();
+       return this._response(true, stats);
+     } catch (e) {
+       return this._response(false, undefined, 'Stats failed', 500);
+diff --git a/src/server/db/jsonDatabase.ts b/src/server/db/jsonDatabase.ts
+index 991a1a6..e508e31 100644
+--- a/src/server/db/jsonDatabase.ts
++++ b/src/server/db/jsonDatabase.ts
+@@ -1,4 +1,5 @@
+ 
++
+ // ============================================================================
+ // DATABASE LAYER
+ // Path: src/server/db/jsonDatabase.ts
+@@ -6,42 +7,205 @@
+ 
+ import { Task, SystemLog } from '../../shared/types/task.types';
+ import { DB_KEYS } from '../../shared/constants';
++import { SerializationAdapter } from './serializationAdapter';
++
++type StorageType = 'local' | 'indexedDB';
+ 
+ class JsonDatabase {
++  private memoryStorage: Record<string, string> = {};
++  private activeStorage: StorageType = 'local';
++  private dbName = 'SimplyDoneDB';
++  private storeName = 'store';
++
++  constructor() {
++    this.initIndexedDB();
++  }
++
++  // --- Environment Helpers ---
++  private get globalObj(): any {
++    if (typeof window !== 'undefined') return window;
++    if (typeof self !== 'undefined') return self;
++    if (typeof globalThis !== 'undefined') return globalThis;
++    return {};
++  }
++
++  private get storage(): Storage | null {
++    const g = this.globalObj;
++    // Prioritize global.localStorage for node environments (mocks), then window.localStorage
++    try {
++      if (g.localStorage) return g.localStorage;
++      if (g.window && g.window.localStorage) return g.window.localStorage;
++    } catch (e) {
++      return null;
++    }
++    return null;
++  }
++
++  private get hasIndexedDB(): boolean {
++    const g = this.globalObj;
++    return g.indexedDB !== undefined || (g.window && g.window.indexedDB !== undefined);
++  }
++  
++  private get indexedDBAPI(): IDBFactory | null {
++     const g = this.globalObj;
++     return g.indexedDB || (g.window && g.window.indexedDB) || null;
++  }
++
++  // --- IndexedDB Implementation ---
++  private initIndexedDB() {
++    const idb = this.indexedDBAPI;
++    if (!idb) return;
++    try {
++      const request = idb.open(this.dbName, 1);
++      request.onupgradeneeded = (event: any) => {
++        const db = event.target.result;
++        if (!db.objectStoreNames.contains(this.storeName)) {
++          db.createObjectStore(this.storeName);
++        }
++      };
++    } catch(e) {
++      console.warn("Failed to initialize IndexedDB", e);
++    }
++  }
++
++  private async writeToIndexedDB(key: string, value: string): Promise<void> {
++    const idb = this.indexedDBAPI;
++    if (!idb) throw new Error("IndexedDB not supported");
++    
++    return new Promise((resolve, reject) => {
++      const request = idb.open(this.dbName, 1);
++      request.onsuccess = (event: any) => {
++        const db = event.target.result;
++        try {
++          const tx = db.transaction(this.storeName, 'readwrite');
++          const store = tx.objectStore(this.storeName);
++          store.put(value, key);
++          tx.oncomplete = () => resolve();
++          tx.onerror = () => reject(tx.error);
++        } catch (err) {
++          reject(err);
++        }
++      };
++      request.onerror = () => reject(request.error);
++    });
++  }
++
++  private async readFromIndexedDB(key: string): Promise<string | null> {
++    const idb = this.indexedDBAPI;
++    if (!idb) return null;
++    
++    return new Promise((resolve, reject) => {
++      const request = idb.open(this.dbName, 1);
++      request.onsuccess = (event: any) => {
++        const db = event.target.result;
++        try {
++          const tx = db.transaction(this.storeName, 'readonly');
++          const store = tx.objectStore(this.storeName);
++          const getReq = store.get(key);
++          getReq.onsuccess = () => resolve(getReq.result || null);
++          getReq.onerror = () => reject(getReq.error);
++        } catch (err) {
++          reject(err);
++        }
++      };
++      request.onerror = () => reject(request.error);
++    });
++  }
++
++  // --- Storage Accessors ---
+   
+-  readTasks(): Task[] {
++  private async getItem(key: string): Promise<string | null> {
++    const storage = this.storage;
++    
++    // Check local storage for the 'USE_IDB' marker or data
++    if (storage) {
++       const localVal = storage.getItem(key);
++       if (localVal === 'USE_IDB') {
++         return await this.readFromIndexedDB(key);
++       }
++       if (localVal) return localVal;
++    }
++    
++    // Fallback/Testing Environment (if LS failed or not present)
++    return this.memoryStorage[key] || null;
++  }
++
++  private async setItem(key: string, value: string): Promise<void> {
++    const storage = this.storage;
++    if (storage) {
++      try {
++        storage.setItem(key, value);
++        return;
++      } catch (e: any) {
++        // Fallback on QuotaExceeded
++        if (e.name === 'QuotaExceededError' || e.message?.includes('Quota') || e.message === 'QuotaExceededError') {
++          console.warn('LocalStorage quota exceeded. Switching to IndexedDB.');
++          try {
++            await this.writeToIndexedDB(key, value);
++            storage.setItem(key, 'USE_IDB'); // Marker
++            return;
++          } catch (idbError) {
++             console.error('IndexedDB Fallback Failed', idbError);
++             // If IDB fails, we just don't save, or we could fallback to memory (but memory is transient)
++          }
++        } else {
++          console.error('LocalStorage Write Error', e);
++        }
++      }
++    } else {
++        // No storage available, fallback to memory
++        this.memoryStorage[key] = value;
++    }
++  }
++  
++  // --- Public Async Methods ---
++
++  async readTasks(): Promise<Task[]> {
+     try {
+-      const data = localStorage.getItem(DB_KEYS.TASKS);
+-      return data ? JSON.parse(data) : [];
++      const data = await this.getItem(DB_KEYS.TASKS);
++      if (!data) return [];
++      const tasks = SerializationAdapter.decode<Task[]>(data);
++      // Validate structure of first item if exists
++      if (tasks.length > 0 && !SerializationAdapter.validateTask(tasks[0])) {
++        console.error('Data validation failed');
++        return [];
++      }
++      return tasks;
+     } catch (e) {
+       console.error("[DB] Read Error", e);
+       return [];
+     }
+   }
+ 
+-  writeTasks(tasks: Task[]): void {
++  async writeTasks(tasks: Task[]): Promise<void> {
+     try {
+-      localStorage.setItem(DB_KEYS.TASKS, JSON.stringify(tasks));
++      const encoded = SerializationAdapter.encode(tasks);
++      await this.setItem(DB_KEYS.TASKS, encoded);
+     } catch (e) {
+       console.error("[DB] Write Error", e);
+     }
+   }
+ 
+-  writeLog(log: SystemLog): void {
++  async writeLog(log: SystemLog): Promise<void> {
+     try {
+-      const logs = this.readLogs();
++      const logs = await this.readLogs();
+       logs.push(log);
+-      // Limit logs to prevent localStorage quotas
+       if (logs.length > 200) logs.shift();
+-      localStorage.setItem(DB_KEYS.LOGS, JSON.stringify(logs));
++      const encoded = SerializationAdapter.encode(logs);
++      await this.setItem(DB_KEYS.LOGS, encoded);
+     } catch (e) {
+       console.error("[DB] Log Error", e);
+     }
+   }
+ 
+-  readLogs(): SystemLog[] {
+-    const data = localStorage.getItem(DB_KEYS.LOGS);
+-    return data ? JSON.parse(data) : [];
++  async readLogs(): Promise<SystemLog[]> {
++    try {
++      const data = await this.getItem(DB_KEYS.LOGS);
++      return data ? SerializationAdapter.decode(data) : [];
++    } catch (e) {
++       console.error("[DB] Log Read Error", e);
++       return [];
++    }
+   }
+ }
+ 
+diff --git a/src/server/services/taskService.ts b/src/server/services/taskService.ts
+index 16d21d4..885fa16 100644
+--- a/src/server/services/taskService.ts
++++ b/src/server/services/taskService.ts
+@@ -14,7 +14,8 @@ const Logger = {
+   error: (msg: string, ctx?: any) => log('ERROR', msg, ctx),
+ };
+ 
+-function log(level: 'INFO' | 'WARN' | 'ERROR', message: string, context?: any) {
++// Async Log wrapper
++async function log(level: 'INFO' | 'WARN' | 'ERROR', message: string, context?: any) {
+   const entry: SystemLog = {
+     id: crypto.randomUUID(),
+     level,
+@@ -22,31 +23,40 @@ function log(level: 'INFO' | 'WARN' | 'ERROR', message: string, context?: any) {
+     timestamp: Date.now(),
+     context
+   };
+-  db.writeLog(entry);
++  // Fire and forget log write
++  db.writeLog(entry).catch(e => console.error("Log failed", e));
+   if (level === 'ERROR') console.error(`[SERVER] ${message}`, context);
+ }
+ 
+ class TaskService {
+   
+-  getAll(): Task[] {
+-    return db.readTasks();
++  async getAll(): Promise<Task[]> {
++    const tasks = await db.readTasks();
++    return tasks.map(t => ({
++      ...t,
++      subtasks: Array.isArray(t.subtasks) ? t.subtasks : []
++    }));
+   }
+ 
+-  getById(id: string): Task | undefined {
+-    return db.readTasks().find(t => t.id === id);
++  async getById(id: string): Promise<Task | undefined> {
++    const tasks = await db.readTasks();
++    const task = tasks.find(t => t.id === id);
++    if (task && !Array.isArray(task.subtasks)) {
++      task.subtasks = [];
++    }
++    return task;
+   }
+ 
+-  create(dto: CreateTaskDTO): Task {
+-    const tasks = db.readTasks();
++  async create(dto: CreateTaskDTO): Promise<Task> {
++    const tasks = await db.readTasks();
+     
+-    // Check for duplicate active tasks
+     const isDuplicate = tasks.some(t => 
+       !t.isCompleted && 
+       t.text.toLowerCase() === dto.text.trim().toLowerCase()
+     );
+ 
+     if (isDuplicate) {
+-      Logger.warn('Creating duplicate task', { text: dto.text });
++      await Logger.warn('Creating duplicate task', { text: dto.text });
+     }
+ 
+     const newTask: Task = {
+@@ -55,26 +65,26 @@ class TaskService {
+       description: dto.description?.trim(),
+       priority: dto.priority,
+       isCompleted: false,
++      subtasks: [],
+       createdAt: Date.now(),
+       updatedAt: Date.now(),
+     };
+ 
+     tasks.push(newTask);
+-    db.writeTasks(tasks);
+-    Logger.info('Task created', { id: newTask.id });
++    await db.writeTasks(tasks);
++    await Logger.info('Task created', { id: newTask.id });
+     
+     return newTask;
+   }
+ 
+-  update(id: string, dto: UpdateTaskDTO): Task | null {
+-    const tasks = db.readTasks();
++  async update(id: string, dto: UpdateTaskDTO): Promise<Task | null> {
++    const tasks = await db.readTasks();
+     const index = tasks.findIndex(t => t.id === id);
+     
+     if (index === -1) return null;
+ 
+     const currentTask = tasks[index];
+     
+-    // Handle completion timestamp logic
+     let completedAt = currentTask.completedAt;
+     if (dto.isCompleted === true && !currentTask.isCompleted) {
+       completedAt = Date.now();
+@@ -85,43 +95,67 @@ class TaskService {
+     const updatedTask: Task = {
+       ...currentTask,
+       ...dto,
++      subtasks: dto.subtasks || currentTask.subtasks || [],
+       updatedAt: Date.now(),
+       completedAt
+     };
+ 
+     tasks[index] = updatedTask;
+-    db.writeTasks(tasks);
+-    Logger.info('Task updated', { id, updates: Object.keys(dto) });
++    await db.writeTasks(tasks);
++    await Logger.info('Task updated', { id, updates: Object.keys(dto) });
+     
+     return updatedTask;
+   }
+ 
+-  delete(id: string): boolean {
+-    const tasks = db.readTasks();
++  async toggleSubtask(taskId: string, subtaskId: string): Promise<Task | null> {
++    const tasks = await db.readTasks();
++    const taskIndex = tasks.findIndex(t => t.id === taskId);
++    
++    if (taskIndex === -1) return null;
++    
++    const task = tasks[taskIndex];
++    if (!Array.isArray(task.subtasks)) task.subtasks = []; 
++
++    const subtaskIndex = task.subtasks.findIndex(s => s.id === subtaskId);
++    if (subtaskIndex === -1) return null;
++
++    task.subtasks[subtaskIndex].isCompleted = !task.subtasks[subtaskIndex].isCompleted;
++    task.updatedAt = Date.now();
++
++    tasks[taskIndex] = task;
++    await db.writeTasks(tasks);
++    await Logger.info('Subtask toggled', { taskId, subtaskId });
++
++    return task;
++  }
++
++  async delete(id: string): Promise<boolean> {
++    const tasks = await db.readTasks();
+     const filtered = tasks.filter(t => t.id !== id);
+     
+     if (filtered.length === tasks.length) return false;
+ 
+-    db.writeTasks(filtered);
+-    Logger.info('Task deleted', { id });
++    await db.writeTasks(filtered);
++    await Logger.info('Task deleted', { id });
++
+     return true;
+   }
+ 
+-  clearCompleted(): number {
+-    const tasks = db.readTasks();
++  async clearCompleted(): Promise<number> {
++    const tasks = await db.readTasks();
+     const activeTasks = tasks.filter(t => !t.isCompleted);
+     const countRemoved = tasks.length - activeTasks.length;
+     
+     if (countRemoved > 0) {
+-      db.writeTasks(activeTasks);
+-      Logger.info('Cleared completed tasks', { count: countRemoved });
++      await db.writeTasks(activeTasks);
++      await Logger.info('Cleared completed tasks', { count: countRemoved });
+     }
+     
+     return countRemoved;
+   }
+ 
+-  getStats(): TaskStats {
+-    const tasks = db.readTasks();
++  async getStats(): Promise<TaskStats> {
++    const tasks = await db.readTasks();
+     const total = tasks.length;
+     const completed = tasks.filter(t => t.isCompleted).length;
+     
+diff --git a/src/server/validators/taskValidator.ts b/src/server/validators/taskValidator.ts
+index fa39b18..a610992 100644
+--- a/src/server/validators/taskValidator.ts
++++ b/src/server/validators/taskValidator.ts
+@@ -10,25 +10,38 @@ import { VALIDATION } from '../../shared/constants';
+ export const TaskValidator = {
+   
+   /**
+-   * Validates the payload for creating a new task
++   * Returns a map of validation errors for creating a task
+    */
+-  validateCreate(dto: CreateTaskDTO): string | null {
+-    if (!dto.text || dto.text.trim().length === 0) {
+-      return 'Task text is required';
+-    }
++  getCreateErrors(dto: CreateTaskDTO): Record<string, string> {
++    const errors: Record<string, string> = {};
+     
+-    if (dto.text.length > VALIDATION.MAX_TITLE_LENGTH) {
+-      return `Task text cannot exceed ${VALIDATION.MAX_TITLE_LENGTH} characters`;
++    if (!dto.text || dto.text.trim().length === 0) {
++      errors.text = 'Task text is required';
++    } else if (dto.text.length > VALIDATION.MAX_TITLE_LENGTH) {
++      errors.text = `Task text cannot exceed ${VALIDATION.MAX_TITLE_LENGTH} characters`;
+     }
+     
+     if (dto.description && dto.description.length > VALIDATION.MAX_DESC_LENGTH) {
+-      return `Description cannot exceed ${VALIDATION.MAX_DESC_LENGTH} characters`;
++      errors.description = `Description cannot exceed ${VALIDATION.MAX_DESC_LENGTH} characters`;
+     }
+     
++    // Check if priority is valid enum value (loose check for string input)
+     if (!Object.values(Priority).includes(dto.priority)) {
+-      return 'Invalid priority level provided';
++      errors.priority = 'Invalid priority level provided';
+     }
+     
++    return errors;
++  },
++
++  /**
++   * Validates the payload for creating a new task
++   */
++  validateCreate(dto: CreateTaskDTO): string | null {
++    const errors = this.getCreateErrors(dto);
++    const errorKeys = Object.keys(errors);
++    if (errorKeys.length > 0) {
++      return errors[errorKeys[0]];
++    }
+     return null;
+   },
+ 
+diff --git a/src/shared/types/task.types.ts b/src/shared/types/task.types.ts
+index 00b22be..bae30f1 100644
+--- a/src/shared/types/task.types.ts
++++ b/src/shared/types/task.types.ts
+@@ -23,6 +23,15 @@ export enum SortOption {
+   PRIORITY_ASC = 'PRIORITY_ASC',
+ }
+ 
++/**
++ * Subtask item structure.
++ */
++export interface SubTask {
++  id: string;
++  text: string;
++  isCompleted: boolean;
++}
++
+ /**
+  * The core Task object.
+  */
+@@ -32,11 +41,20 @@ export interface Task {
+   description?: string;
+   isCompleted: boolean;
+   priority: Priority;
++  subtasks: SubTask[];
+   createdAt: number;
+   updatedAt: number;
+   completedAt?: number;
+ }
+ 
++/**
++ * Interface for serialization adapters.
++ */
++export interface Serializer {
++  encode<T>(data: T): string;
++  decode<T>(data: string): T;
++}
++
+ /**
+  * Statistics summary for the dashboard.
+  */
+@@ -79,10 +97,11 @@ export interface UpdateTaskDTO {
+   isCompleted?: boolean;
+   priority?: Priority;
+   description?: string;
++  subtasks?: SubTask[];
+ }
+ 
+ /**
+- * Log entry for the backend logger.
++ * System Log entry structure used in server logs.
+  */
+ export interface SystemLog {
+   id: string;
