@@ -4,26 +4,31 @@ task-003
 Add task categorization with custom tags allowing users to organize and filter tasks by multiple categories.
 
 requirements:
-- Create TaskTag type with id, name, and color fields
-- Add tags array to Task type (array of TaskTag objects)
-- Create tagService with methods: createTag, getAllTags, deleteTag
-- Add taskService.addTagToTask method that takes taskId and tagId
-- Add taskService.removeTagFromTask method
-- Expose tag methods in TaskController
-- Add tag management methods to apiService
-- Create TagManager component for creating/deleting tags
-- Update TaskForm to show tag selector with existing tags
-- Display tags as colored badges in TaskItem component
-- Add filter functionality in FilterBar to filter by tags
+
+-Create TaskTag type with id, name, color fields
+-Add tags array to Task type (array of TaskTag objects)
+-Create tagService with methods: createTag, getAllTags, deleteTag
+-Add taskService.addTagToTask method that takes taskId and tagId
+-Add taskService.removeTagFromTask method
+-Expose tag methods in TaskController
+-Add tag management methods to apiService
+-Create TagManager component for creating/deleting tags
+-Update TaskForm to show tag selector with existing tags
+-Display tags as colored badges in TaskItem component
+-Add filter functionality in FilterBar to filter by tags
+-For this test you have to create two new files: src/client/components/TagManager.tsx and /src/server/services/tagService.ts
 
 Success_criteria:
-- All 6 tests pass
-- Users can create custom tags with names and colors
-- Tags can be added to and removed from tasks
-- Multiple tags can be assigned to one task
-- Tag filtering shows only tasks with selected tag
-- Deleting a tag removes it from all tasks
-- Tags persist across sessions
+
+-All 9 tests pass
+-Users are able to make custom tags with names and color
+-Tasks can be tagged and untagged
+-A single task can be given several tags
+-Tag filtering only displays those tasks that have a selected tag
+-Removing of a tag deletes it in all of the tasks
+-Tagging continues between sessions
+-Colors of the tags are functional in UI
+-TagManager program displays correctly
 
 author_name: kareemblessed
 author_email: blessedronan@gmail.com

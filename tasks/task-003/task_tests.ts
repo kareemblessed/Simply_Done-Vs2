@@ -1,130 +1,114 @@
 
-import { taskService, tagService } from '../../src/server/services/taskService';
-import { Priority, TaskTag } from '../../src/shared/types/task.types';
-
-// Mock localStorage if not available (Node environment)
-if (typeof localStorage === 'undefined') {
-  const store: Record<string, string> = {};
-  (globalThis as any).localStorage = {
-    getItem: (key: string) => store[key] || null,
-    setItem: (key: string, value: string) => { store[key] = value; },
-    removeItem: (key: string) => { delete store[key]; },
-    clear: () => { for (const key in store) delete store[key]; }
-  };
-} else {
-  localStorage.clear();
-}
+import { taskService } from '../../src/server/services/taskService';
+import { tagService } from '../../src/server/services/tagService';
+import { TaskController } from '../../src/server/controllers/taskController';
+import { apiService } from '../../src/client/services/apiService';
+import { Priority, Task, TaskTag } from '../../src/shared/types/task.types';
 
 let passCount = 0;
 let failCount = 0;
 
-function test(name: string, fn: () => void) {
-  try {
-    fn();
-    console.log(`✅ ${name}`);
+function assert(condition: boolean, message: string) {
+  if (condition) {
+    console.log(`✅ ${message}`);
     passCount++;
-  } catch (e: any) {
-    console.error(`❌ ${name}: ${e.message}`);
+  } else {
+    console.error(`❌ ${message}`);
     failCount++;
   }
 }
 
-console.log('\n=== Task-003 Tests: Categorization & Tags ===\n');
+console.log('\n=== Task-003 Tests: Task Categorization ===\n');
 
-// Test 1: TaskTag type exists and defaults
-test('Test 1: TaskTag type and default task structure', () => {
-  const task = taskService.create({ 
-    text: 'Test Tag Structure', 
-    priority: Priority.MEDIUM 
-  });
-  
-  if (!Array.isArray(task.tags)) throw new Error('Task should have tags array');
-  if (task.tags.length !== 0) throw new Error('New task tags should be empty');
-});
+async function runTests() {
+  // Setup: Create a tag
+  let createdTag: TaskTag | null = null;
+  let createdTask: Task | null = null;
 
-// Test 2: tagService.createTag functionality
-test('Test 2: Create a new tag', () => {
-  const tag = tagService.create({ name: 'Work', color: 'bg-red-500' });
-  
-  if (!tag.id) throw new Error('Tag ID missing');
-  if (tag.name !== 'Work') throw new Error('Tag name mismatch');
-  if (tag.color !== 'bg-red-500') throw new Error('Tag color mismatch');
-  
-  const fetched = tagService.getById(tag.id);
-  if (!fetched) throw new Error('Could not retrieve created tag');
-});
+  // Test 1: tagService.createTag creates tag successfully
+  try {
+    createdTag = await tagService.createTag('Work', '#ff0000');
+    assert(createdTag.name === 'Work' && createdTag.color === '#ff0000', 'tagService.createTag creates tag successfully');
+  } catch (e) { console.error(e); failCount++; }
 
-// Test 3: Add tag to task
-test('Test 3: taskService.addTagToTask', () => {
-  const task = taskService.create({ text: 'Tag Me', priority: Priority.LOW });
-  const tag = tagService.create({ name: 'Urgent', color: 'bg-red-500' });
-  
-  const updatedTask = taskService.addTagToTask(task.id, tag.id);
-  
-  if (!updatedTask) throw new Error('Returned null from addTagToTask');
-  if (updatedTask.tags.length !== 1) throw new Error('Tag count mismatch');
-  if (updatedTask.tags[0].id !== tag.id) throw new Error('Added wrong tag');
-  
-  // Test duplicate prevention
-  const dupTask = taskService.addTagToTask(task.id, tag.id);
-  if (dupTask && dupTask.tags.length !== 1) throw new Error('Duplicate tag added');
-});
+  // Test 2: tagService.getAllTags retrieves all tags
+  try {
+    const tags = await tagService.getAllTags();
+    assert(tags.some(t => t.id === createdTag?.id), 'tagService.getAllTags retrieves all tags');
+  } catch (e) { console.error(e); failCount++; }
 
-// Test 4: Remove tag from task
-test('Test 4: taskService.removeTagFromTask', () => {
-  const task = taskService.create({ text: 'Untag Me', priority: Priority.LOW });
-  const tag = tagService.create({ name: 'Later', color: 'bg-blue-500' });
-  
-  taskService.addTagToTask(task.id, tag.id);
-  const result = taskService.removeTagFromTask(task.id, tag.id);
-  
-  if (!result) throw new Error('Returned null from removeTagFromTask');
-  if (result.tags.length !== 0) throw new Error('Tag was not removed');
-});
+  // Test 3: Task type includes tags array (verified by creation/structure)
+  try {
+    createdTask = await taskService.create({ text: 'Tag Task', priority: Priority.MEDIUM });
+    assert(Array.isArray(createdTask.tags), 'Task type includes tags array');
+  } catch (e) { console.error(e); failCount++; }
 
-// Test 5: Initialize task with tags
-test('Test 5: Create task with initial tags', () => {
-  const tag1 = tagService.create({ name: 'Init1', color: 'c1' });
-  const tag2 = tagService.create({ name: 'Init2', color: 'c2' });
-  
-  const task = taskService.create({ 
-    text: 'Pre-tagged', 
-    priority: Priority.HIGH, 
-    tagIds: [tag1.id, tag2.id] 
-  });
-  
-  if (task.tags.length !== 2) throw new Error('Initial tags not applied');
-  if (!task.tags.find(t => t.name === 'Init1')) throw new Error('Tag 1 missing');
-});
+  // Test 4: taskService.addTagToTask attaches tag to task
+  try {
+    if (createdTask && createdTag) {
+      const updated = await taskService.addTagToTask(createdTask.id, createdTag.id);
+      assert(updated?.tags.some(t => t.id === createdTag!.id) === true, 'taskService.addTagToTask attaches tag to task');
+      createdTask = updated; // Update local ref
+    } else {
+      failCount++; console.error('Skipping Test 4 due to setup failure');
+    }
+  } catch (e) { console.error(e); failCount++; }
 
-// Test 6: Cascade delete (Deleting tag removes it from tasks)
-test('Test 6: Deleting a tag removes it from associated tasks', () => {
-  const tagToDelete = tagService.create({ name: 'Delete Me', color: 'c3' });
-  const tagToKeep = tagService.create({ name: 'Keep Me', color: 'c4' });
-  
-  const task1 = taskService.create({ text: 'T1', priority: Priority.LOW });
-  const task2 = taskService.create({ text: 'T2', priority: Priority.LOW });
-  
-  taskService.addTagToTask(task1.id, tagToDelete.id);
-  taskService.addTagToTask(task2.id, tagToDelete.id);
-  taskService.addTagToTask(task2.id, tagToKeep.id);
-  
-  // Verify setup
-  if (taskService.getById(task1.id)?.tags.length !== 1) throw new Error('Setup failed T1');
-  if (taskService.getById(task2.id)?.tags.length !== 2) throw new Error('Setup failed T2');
-  
-  // Perform global delete
-  taskService.removeTagGlobally(tagToDelete.id);
-  tagService.delete(tagToDelete.id);
-  
-  const t1Post = taskService.getById(task1.id);
-  const t2Post = taskService.getById(task2.id);
-  
-  if (t1Post?.tags.length !== 0) throw new Error('Tag not removed from T1');
-  if (t2Post?.tags.length !== 1) throw new Error('Tag not removed from T2');
-  if (t2Post?.tags[0].id !== tagToKeep.id) throw new Error('Wrong tag removed from T2');
-});
+  // Test 5: apiService handles tag methods (Integration check)
+  try {
+    const newTag = await apiService.createTag('API Tag', '#00ff00');
+    assert(newTag.name === 'API Tag', 'apiService.createTag works');
+    const tags = await apiService.fetchTags();
+    assert(tags.length >= 2, 'apiService.fetchTags works');
+  } catch (e) { console.error(e); failCount++; }
 
-console.log(`\n${passCount}/${passCount + failCount} passed\n`);
-if (failCount > 0) (process as any).exit(1);
-(process as any).exit(0);
+  // Test 6: Multiple tags can be assigned
+  try {
+    if (createdTask) {
+      const tag2 = await tagService.createTag('Urgent', '#0000ff');
+      const updated = await taskService.addTagToTask(createdTask.id, tag2.id);
+      assert(updated?.tags.length === 2, 'Multiple tags can be assigned to one task');
+    }
+  } catch (e) { console.error(e); failCount++; }
+
+  // Test 7: taskService.removeTagFromTask removes tag
+  try {
+    if (createdTask && createdTag) {
+      const updated = await taskService.removeTagFromTask(createdTask.id, createdTag.id);
+      assert(updated?.tags.some(t => t.id === createdTag!.id) === false, 'taskService.removeTagFromTask removes tag from task');
+      // createdTask still has 'Urgent' tag from Test 6 logic conceptually, but 'updated' is the source of truth
+    }
+  } catch (e) { console.error(e); failCount++; }
+
+  // Test 8: tagService.deleteTag removes tag correctly AND from tasks
+  try {
+    // Create a fresh task and tag for this test
+    const tTask = await taskService.create({ text: 'Delete Test', priority: Priority.LOW });
+    const tTag = await tagService.createTag('Temporary', '#333');
+    await taskService.addTagToTask(tTask.id, tTag.id);
+    
+    // Delete the tag
+    await tagService.deleteTag(tTag.id);
+    
+    // Verify tag is gone
+    const allTags = await tagService.getAllTags();
+    const tagExists = allTags.some(t => t.id === tTag.id);
+    
+    // Verify task no longer has it
+    const refreshedTask = await taskService.getById(tTask.id);
+    const hasTag = refreshedTask?.tags.some(t => t.id === tTag.id);
+
+    assert(!tagExists && !hasTag, 'tagService.deleteTag removes tag and cleans up tasks');
+  } catch (e) { console.error(e); failCount++; }
+
+  // Test 9: Controller exposes endpoints (simple check)
+  try {
+    const response = await TaskController.getTags();
+    assert(response.success && Array.isArray(response.data), 'TaskController exposes getTags endpoint');
+  } catch (e) { console.error(e); failCount++; }
+
+  console.log(`\n${passCount}/${passCount + failCount} passed\n`);
+  if (failCount > 0) (process as any).exit(1);
+}
+
+runTests();
