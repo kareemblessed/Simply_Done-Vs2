@@ -1,126 +1,132 @@
+
 import { taskService } from '../../src/server/services/taskService';
 import { cacheService } from '../../src/server/services/cacheService';
-import { CacheMiddleware } from '../../src/client/middleware/cacheMiddleware';
+import { apiService } from '../../src/client/services/apiService';
+import { db } from '../../src/server/db/jsonDatabase';
 import { Priority } from '../../src/shared/types/task.types';
-
-// Mock localStorage if not available (Node environment)
-if (typeof localStorage === 'undefined') {
-  const store: Record<string, string> = {};
-  (globalThis as any).localStorage = {
-    getItem: (key: string) => store[key] || null,
-    setItem: (key: string, value: string) => { store[key] = value; },
-    removeItem: (key: string) => { delete store[key]; },
-    clear: () => { for (const key in store) delete store[key]; }
-  };
-} else {
-  localStorage.clear();
-}
 
 let passCount = 0;
 let failCount = 0;
 
-function test(name: string, fn: () => Promise<void> | void) {
-  try {
-    const result = fn();
-    if (result instanceof Promise) {
-      result.then(() => {
-        console.log(`✅ ${name}`);
-        passCount++;
-      }).catch(e => {
-        console.error(`❌ ${name}: ${e.message}`);
-        failCount++;
-      });
-    } else {
-      console.log(`✅ ${name}`);
-      passCount++;
-    }
-  } catch (e: any) {
-    console.error(`❌ ${name}: ${e.message}`);
+function assert(condition: boolean, message: string) {
+  if (condition) {
+    console.log(`✅ ${message}`);
+    passCount++;
+  } else {
+    console.error(`❌ ${message}`);
     failCount++;
   }
 }
 
-console.log('\n=== Task-006 Tests: Cache Strategy ===\n');
+console.log('\n=== Task-006 Tests: Cache Invalidation ===\n');
 
-// --- Unit Tests: CacheService ---
-
-test('Test 1: Server Cache stores and retrieves data', () => {
-  cacheService.flush();
-  cacheService.set('test_key', { foo: 'bar' }, 1000);
-  const data = cacheService.get<{foo: string}>('test_key');
+async function runTests() {
   
-  if (!data || data.foo !== 'bar') throw new Error('Cache retrieval failed');
-});
-
-test('Test 2: Server Cache expires data', async () => {
-  cacheService.flush();
-  cacheService.set('expired_key', 'data', -1); // Immediately expired
-  
-  const data = cacheService.get('expired_key');
-  if (data !== null) throw new Error('Cache should return null for expired items');
-});
-
-test('Test 3: Server Cache invalidation works', () => {
-  cacheService.flush();
-  cacheService.set('task:1', 'a');
-  cacheService.set('task:2', 'b');
-  
-  cacheService.invalidate('task:');
-  
-  if (cacheService.get('task:1') !== null) throw new Error('Invalidation failed');
-  if (cacheService.get('task:2') !== null) throw new Error('Invalidation failed');
-});
-
-// --- Unit Tests: Client Middleware ---
-
-test('Test 4: Client Middleware caches promises', async () => {
-  const middleware = CacheMiddleware.getInstance();
-  middleware.clear();
-  
-  let callCount = 0;
-  const fetcher = async () => {
-    callCount++;
-    return 'response';
-  };
-  
-  await middleware.execute('req_1', fetcher);
-  await middleware.execute('req_1', fetcher);
-  
-  if (callCount !== 1) throw new Error(`Middleware should cache requests. Count: ${callCount}`);
-});
-
-test('Test 5: Client Middleware invalidates', async () => {
-  const middleware = CacheMiddleware.getInstance();
-  middleware.clear();
-  
-  let callCount = 0;
-  const fetcher = async () => { callCount++; return 'fresh'; };
-  
-  await middleware.execute('req_2', fetcher); // count = 1
-  middleware.invalidate('req_2');
-  await middleware.execute('req_2', fetcher); // count = 2
-  
-  if (callCount !== 2) throw new Error(`Should refetch after invalidation. Count: ${callCount}`);
-});
-
-// --- Integration Tests: TaskService ---
-
-test('Test 6: Task Creation Invalidates Service Cache', () => {
-  localStorage.clear();
+  // Clean start
   cacheService.flush();
   
-  // 1. Prime cache
-  taskService.getAll(); 
-  if (!cacheService.get('task_service:all_tasks')) throw new Error('Cache should be primed after read');
+  // Test 1: Cache Types & Config
+  try {
+    const config = cacheService.getConfig();
+    assert(config.ttl > 0 && config.enabled === true, 'CacheConfig has ttl and is enabled');
+  } catch (e) { console.error(e); failCount++; }
 
-  // 2. Create task
-  taskService.create({ text: 'New Task', priority: Priority.MEDIUM });
+  // Test 2: Memoization / Cache Set & Get
+  try {
+    const key = 'test_key';
+    const val = { data: 123 };
+    cacheService.set(key, val);
+    const retrieved = cacheService.get(key);
+    assert(JSON.stringify(retrieved) === JSON.stringify(val), 'Cache stores and retrieves data correctly');
+  } catch (e) { console.error(e); failCount++; }
 
-  // 3. Verify cache cleared
-  if (cacheService.get('task_service:all_tasks') !== null) throw new Error('Cache should be invalidated after mutation');
-});
+  // Test 3: Expiry (TTL)
+  try {
+    cacheService.set('short_lived', 'value', 10); // 10ms TTL
+    await new Promise(r => setTimeout(r, 50));
+    const expired = cacheService.get('short_lived');
+    assert(expired === null, 'Expired cache entries return null');
+  } catch (e) { console.error(e); failCount++; }
 
-// Wait for async tests
-setTimeout(() => {
+  // Test 4: TaskService Memoization (getAll)
+  try {
+    await taskService.create({ text: 'Cache Task 1', priority: Priority.LOW });
+    
+    // First call caches it
+    const tasks1 = taskService.getAll();
+    
+    // Modify DB directly to bypass service invalidation (simulate external change not detected if cached)
+    // Actually, we want to prove it IS cached.
+    // If we call getAll again, it should return the cached result.
+    // We can spy on cacheService.get
+    
+    const originalGet = cacheService.get.bind(cacheService);
+    let hitCount = 0;
+    cacheService.get = (k) => {
+        const res = originalGet(k);
+        if (res && k.includes('ALL_TASKS')) hitCount++;
+        return res;
+    };
+    
+    taskService.getAll(); // Should hit cache
+    taskService.getAll(); // Should hit cache again
+    
+    assert(hitCount >= 2, 'taskService.getAll uses memoization/caching');
+    cacheService.get = originalGet; // Restore
+  } catch (e) { console.error(e); failCount++; }
+
+  // Test 5: Invalidation on Create
+  try {
+    const initialTasks = taskService.getAll(); // Ensure cache is warm
+    const newTask = await taskService.create({ text: 'Cache Invalidate Me', priority: Priority.HIGH });
+    
+    // Cache should be invalidated, so next get returns new list
+    const updatedTasks = taskService.getAll();
+    assert(updatedTasks.length === initialTasks.length + 1, 'Cache invalidates on task creation');
+  } catch (e) { console.error(e); failCount++; }
+
+  // Test 6: Invalidation on Update
+  try {
+    const task = (await taskService.getAll())[0];
+    await taskService.update(task.id, { isCompleted: true });
+    
+    const allTasks = taskService.getAll();
+    const updated = allTasks.find(t => t.id === task.id);
+    assert(updated?.isCompleted === true, 'Cache invalidates on task update');
+  } catch (e) { console.error(e); failCount++; }
+
+  // Test 7: Invalidation on Delete
+  try {
+    const task = (await taskService.getAll())[0];
+    await taskService.delete(task.id);
+    const allTasks = taskService.getAll();
+    assert(!allTasks.find(t => t.id === task.id), 'Cache invalidates on task deletion');
+  } catch (e) { console.error(e); failCount++; }
+
+  // Test 8: ApiService Client Middleware
+  try {
+    // This is hard to test in integration without mocking fetch, 
+    // but we can check if repeated calls are faster or if the method exists.
+    const start = Date.now();
+    await apiService.fetchTasks();
+    const mid = Date.now();
+    await apiService.fetchTasks(); // Should be instant due to client cache
+    const end = Date.now();
+    
+    // First call has 300ms delay in controller. Second should be ~0ms.
+    // Allow some margin
+    assert((end - mid) < 100, 'apiService retrieves cached responses instantly');
+  } catch (e) { console.error(e); failCount++; }
+
+  // Test 9: Persistence
+  try {
+    cacheService.set('persist_me', 'saved');
+    const dbData = db.readCache(); // We need to expose this in DB or assume it works if get works after reload simulation
+    assert(dbData.some(e => e.key === 'persist_me'), 'jsonDatabase persists cache metadata');
+  } catch (e) { console.error(e); failCount++; }
+
   console.log(`\n${passCount}/${passCount + failCount} passed\n`);
-}, 100);
+  if (failCount > 0) (process as any).exit(1);
+}
+
+runTests();
