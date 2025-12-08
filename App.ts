@@ -1,1 +1,1 @@
-// File deleted. Main App is in src/client/App.tsxgi
+// File deleted. Main App is in src/client/App.ts
