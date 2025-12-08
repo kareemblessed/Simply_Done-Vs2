@@ -1,0 +1,929 @@
+diff --git a/src/client/App.tsx b/src/client/App.tsx
+index bcdbba9..5d3cf6e 100644
+--- a/src/client/App.tsx
++++ b/src/client/App.tsx
+@@ -1,10 +1,11 @@
+ 
+ import React, { useEffect, useState, useMemo } from 'react';
+-import { Task, Priority, TaskStats, SortOption } from '../shared/types/task.types';
++import { Task, Priority, TaskStats, SortOption, FilterQuery } from '../shared/types/task.types';
+ import { getPriorityWeight } from '../shared/utils/helpers';
+ import { apiService } from './services/apiService';
+ import { TaskForm } from './components/TaskForm';
+ import { FilterBar } from './components/FilterBar';
++import { FilterComposer } from './components/FilterComposer';
+ import { StatsCard } from './components/StatsCard';
+ import { TaskList } from './components/TaskList';
+ 
+@@ -18,15 +19,22 @@ const App: React.FC = () => {
+   // UI State
+   const [filter, setFilter] = useState<'ALL' | 'ACTIVE' | 'COMPLETED'>('ALL');
+   const [sort, setSort] = useState<SortOption>(SortOption.NEWEST);
++  const [showAdvancedFilter, setShowAdvancedFilter] = useState(false);
++  const [advancedQuery, setAdvancedQuery] = useState<FilterQuery | null>(null);
+ 
+   // --- Actions ---
+   const refreshData = async () => {
+     try {
+       setLoading(true);
+-      const [fetchedTasks, fetchedStats] = await Promise.all([
+-        apiService.fetchTasks(),
+-        apiService.getStats()
+-      ]);
++      // If we have an advanced query, use it, otherwise fetch normally
++      let fetchedTasks;
++      if (advancedQuery) {
++        fetchedTasks = await apiService.searchTasks(advancedQuery);
++      } else {
++        fetchedTasks = await apiService.fetchTasks();
++      }
++      
++      const fetchedStats = await apiService.getStats();
+       setTasks(fetchedTasks);
+       setStats(fetchedStats);
+       setError(null);
+@@ -39,7 +47,7 @@ const App: React.FC = () => {
+ 
+   useEffect(() => {
+     refreshData();
+-  }, []);
++  }, [advancedQuery]); // Reload when advanced query changes
+ 
+   const updateStats = async () => {
+     try {
+@@ -48,6 +56,13 @@ const App: React.FC = () => {
+     } catch (e) { console.error(e); }
+   };
+ 
++  const handleApplyAdvancedFilter = (query: FilterQuery | null) => {
++    setAdvancedQuery(query);
++    if (!query) {
++      // If clearing filter, we just triggered refresh via dependency
++    }
++  };
++
+   const handleAddTask = async (text: string, priority: Priority, desc?: string) => {
+     try {
+       const newTask = await apiService.createTask(text, priority, desc);
+@@ -56,6 +71,14 @@ const App: React.FC = () => {
+     } catch (err: any) { alert(err.message); }
+   };
+ 
++  const handleEditTask = async (id: string, updates: Partial<Task>) => {
++    try {
++      const updated = await apiService.updateTask(id, updates);
++      setTasks(prev => prev.map(t => t.id === id ? updated : t));
++      await updateStats();
++    } catch (err: any) { alert(err.message); }
++  };
++
+   const handleToggleTask = async (id: string, currentStatus: boolean) => {
+     setTasks(prev => prev.map(t => t.id === id ? { ...t, isCompleted: !currentStatus } : t));
+     try {
+@@ -64,6 +87,21 @@ const App: React.FC = () => {
+     } catch (err: any) { refreshData(); alert(err.message); }
+   };
+ 
++  const handleToggleSubtask = async (taskId: string, subtaskId: string) => {
++     // Optimistic update
++     setTasks(prev => prev.map(t => {
++       if (t.id !== taskId) return t;
++       return {
++         ...t,
++         subtasks: t.subtasks.map(s => s.id === subtaskId ? { ...s, isCompleted: !s.isCompleted } : s)
++       };
++     }));
++
++     try {
++       await apiService.toggleSubtask(taskId, subtaskId);
++     } catch (err: any) { refreshData(); alert(err.message); }
++  };
++
+   const handleDeleteTask = async (id: string) => {
+     if (!confirm('Delete this task?')) return;
+     const old = [...tasks];
+@@ -86,6 +124,10 @@ const App: React.FC = () => {
+   // --- Logic ---
+   const processedTasks = useMemo(() => {
+     let result = [...tasks];
++    
++    // Client-side filtering for basic tabs (Active/Completed)
++    // NOTE: Advanced Query happens server-side, so `tasks` is already filtered by that.
++    // However, we still apply the tab filter ON TOP of the advanced query results.
+     if (filter === 'ACTIVE') result = result.filter(t => !t.isCompleted);
+     else if (filter === 'COMPLETED') result = result.filter(t => t.isCompleted);
+ 
+@@ -130,7 +172,16 @@ const App: React.FC = () => {
+             onSortChange={setSort}
+             onClearCompleted={handleClearCompleted}
+             hasCompleted={tasks.some(t => t.isCompleted)}
++            onToggleAdvanced={() => setShowAdvancedFilter(!showAdvancedFilter)}
++            isAdvancedActive={!!advancedQuery}
+           />
++          
++          {showAdvancedFilter && (
++            <FilterComposer 
++              onApply={handleApplyAdvancedFilter}
++              onClose={() => setShowAdvancedFilter(false)}
++            />
++          )}
+ 
+           {error && (
+             <div className="mb-6 p-4 bg-red-50 text-red-700 rounded-2xl border border-red-100 flex items-center gap-3">
+@@ -143,9 +194,12 @@ const App: React.FC = () => {
+             tasks={processedTasks}
+             loading={loading}
+             onToggle={handleToggleTask}
++            onToggleSubtask={handleToggleSubtask}
+             onDelete={handleDeleteTask}
++            onEdit={handleEditTask}
+             emptyMessage={
+-              filter === 'ALL' ? "Your list is empty. Add a task above to get started!" 
++              advancedQuery ? "No tasks match your custom filter."
++              : filter === 'ALL' ? "Your list is empty. Add a task above to get started!" 
+               : filter === 'ACTIVE' ? "You're all caught up! Great job." 
+               : "Finish some tasks to see them here."
+             }
+@@ -154,7 +208,7 @@ const App: React.FC = () => {
+ 
+         <div className="mt-12 text-center opacity-60">
+            <p className="text-[10px] text-slate-500 font-bold tracking-[0.2em] uppercase">
+-             v2.1 • LocalStorage Database • Secure
++             v2.3 • LocalStorage Database • Secure
+            </p>
+         </div>
+       </div>
+diff --git a/src/client/components/FilterBar.tsx b/src/client/components/FilterBar.tsx
+index 8f938bc..d630a4d 100644
+--- a/src/client/components/FilterBar.tsx
++++ b/src/client/components/FilterBar.tsx
+@@ -9,6 +9,8 @@ interface FilterBarProps {
+   onSortChange: (s: SortOption) => void;
+   onClearCompleted: () => void;
+   hasCompleted: boolean;
++  onToggleAdvanced: () => void;
++  isAdvancedActive: boolean;
+ }
+ 
+ export const FilterBar: React.FC<FilterBarProps> = ({ 
+@@ -17,24 +19,43 @@ export const FilterBar: React.FC<FilterBarProps> = ({
+   onFilterChange, 
+   onSortChange,
+   onClearCompleted,
+-  hasCompleted
++  hasCompleted,
++  onToggleAdvanced,
++  isAdvancedActive
+ }) => {
+   return (
+     <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6 pb-6 border-b border-slate-100">
+-      <div className="flex bg-slate-100/80 p-1 rounded-xl backdrop-blur-sm">
+-        {(['ALL', 'ACTIVE', 'COMPLETED'] as const).map((filter) => (
+-          <button
+-            key={filter}
+-            onClick={() => onFilterChange(filter)}
+-            className={`px-4 py-2 text-xs font-bold uppercase tracking-wider rounded-lg transition-all duration-300 ${
+-              currentFilter === filter
+-                ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200'
+-                : 'text-slate-500 hover:text-indigo-600 hover:bg-white/50'
+-            }`}
+-          >
+-            {filter}
+-          </button>
+-        ))}
++      <div className="flex flex-wrap items-center gap-2">
++        <div className="flex bg-slate-100/80 p-1 rounded-xl backdrop-blur-sm">
++          {(['ALL', 'ACTIVE', 'COMPLETED'] as const).map((filter) => (
++            <button
++              key={filter}
++              onClick={() => onFilterChange(filter)}
++              className={`px-4 py-2 text-xs font-bold uppercase tracking-wider rounded-lg transition-all duration-300 ${
++                currentFilter === filter
++                  ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200'
++                  : 'text-slate-500 hover:text-indigo-600 hover:bg-white/50'
++              }`}
++            >
++              {filter}
++            </button>
++          ))}
++        </div>
++        
++        <button
++          onClick={onToggleAdvanced}
++          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-wider border transition-all duration-300 ${
++            isAdvancedActive 
++              ? 'bg-indigo-50 text-indigo-600 border-indigo-200' 
++              : 'bg-white text-slate-500 border-slate-200 hover:border-indigo-300'
++          }`}
++        >
++          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
++            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
++          </svg>
++          Advanced
++          {isAdvancedActive && <span className="flex h-2 w-2 rounded-full bg-indigo-500"></span>}
++        </button>
+       </div>
+ 
+       <div className="flex items-center gap-3 w-full sm:w-auto">
+diff --git a/src/client/services/apiService.ts b/src/client/services/apiService.ts
+index c53d3aa..b28a540 100644
+--- a/src/client/services/apiService.ts
++++ b/src/client/services/apiService.ts
+@@ -4,13 +4,32 @@
+ // Path: src/client/services/apiService.ts
+ // ============================================================================
+ 
+-import { Task, CreateTaskDTO, UpdateTaskDTO, TaskStats, Priority } from '../../shared/types/task.types';
++import { Task, CreateTaskDTO, UpdateTaskDTO, TaskStats, Priority, FilterQuery, FilterPreset, TaskTag } from '../../shared/types/task.types';
+ import { TaskController } from '../../server/index';
+ 
++/**
++ * Definition of the API Service Interface
++ */
++export interface ApiService {
++  fetchTasks(): Promise<Task[]>;
++  createTask(text: string, priority: Priority, description?: string): Promise<Task>;
++  updateTask(id: string, updates: UpdateTaskDTO): Promise<Task>;
++  toggleTask(id: string, currentStatus: boolean): Promise<Task>;
++  toggleSubtask(taskId: string, subtaskId: string): Promise<Task>;
++  deleteTask(id: string): Promise<void>;
++  clearCompleted(): Promise<number>;
++  getStats(): Promise<TaskStats>;
++  fetchTags(): Promise<TaskTag[]>;
++  createTag(name: string, color: string): Promise<TaskTag>;
++  searchTasks(query: FilterQuery): Promise<Task[]>;
++  saveFilterPreset(name: string, query: FilterQuery): Promise<FilterPreset>;
++  getFilterPresets(): Promise<FilterPreset[]>;
++}
++
+ /**
+  * Handles communication between Frontend components and the Backend Controller.
+  */
+-export const apiService = {
++export const apiService: ApiService = {
+   
+   async fetchTasks(): Promise<Task[]> {
+     const response = await TaskController.getTasks();
+@@ -25,6 +44,12 @@ export const apiService = {
+     return response.data;
+   },
+ 
++  async updateTask(id: string, updates: UpdateTaskDTO): Promise<Task> {
++    const response = await TaskController.updateTask(id, updates);
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
+   async toggleTask(id: string, currentStatus: boolean): Promise<Task> {
+     const payload: UpdateTaskDTO = { isCompleted: !currentStatus };
+     const response = await TaskController.updateTask(id, payload);
+@@ -32,6 +57,12 @@ export const apiService = {
+     return response.data;
+   },
+ 
++  async toggleSubtask(taskId: string, subtaskId: string): Promise<Task> {
++    const response = await TaskController.toggleSubtask(taskId, subtaskId);
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
+   async deleteTask(id: string): Promise<void> {
+     const response = await TaskController.deleteTask(id);
+     if (!response.success) throw new Error(response.error);
+@@ -47,5 +78,39 @@ export const apiService = {
+     const response = await TaskController.getStats();
+     if (!response.success || !response.data) throw new Error(response.error);
+     return response.data;
++  },
++
++  // --- Tags ---
++
++  async fetchTags(): Promise<TaskTag[]> {
++    const response = await TaskController.getTags();
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
++  async createTag(name: string, color: string): Promise<TaskTag> {
++    const response = await TaskController.createTag(name, color);
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
++  // --- Advanced Filtering ---
++
++  async searchTasks(query: FilterQuery): Promise<Task[]> {
++    const response = await TaskController.searchTasks(query);
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
++  async saveFilterPreset(name: string, query: FilterQuery): Promise<FilterPreset> {
++    const response = await TaskController.saveFilterPreset(name, query);
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
++  async getFilterPresets(): Promise<FilterPreset[]> {
++    const response = await TaskController.getFilterPresets();
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
+   }
+ };
+diff --git a/src/server/controllers/taskController.ts b/src/server/controllers/taskController.ts
+index 4028278..bb89438 100644
+--- a/src/server/controllers/taskController.ts
++++ b/src/server/controllers/taskController.ts
+@@ -4,9 +4,11 @@
+ // Path: src/server/controllers/taskController.ts
+ // ============================================================================
+ 
+-import { Task, ApiResponse, CreateTaskDTO, UpdateTaskDTO, TaskStats } from '../../shared/types/task.types';
++import { Task, ApiResponse, CreateTaskDTO, UpdateTaskDTO, TaskStats, FilterQuery, FilterPreset, TaskTag } from '../../shared/types/task.types';
+ import { TaskValidator } from '../validators/taskValidator';
+ import { taskService } from '../services/taskService';
++import { filterService } from '../services/filterService';
++import { db } from '../db/jsonDatabase';
+ import { delay } from '../../shared/utils/helpers';
+ 
+ export const TaskController = {
+@@ -24,6 +26,10 @@ export const TaskController = {
+     };
+   },
+ 
++  asyncHb(): Promise<ApiResponse<string>> {
++      return this._response(true, "pong");
++  },
++
+   async getTasks(): Promise<ApiResponse<Task[]>> {
+     await delay(300); // Simulate network
+     try {
+@@ -63,6 +69,17 @@ export const TaskController = {
+     }
+   },
+ 
++  async toggleSubtask(taskId: string, subtaskId: string): Promise<ApiResponse<Task>> {
++    await delay(150);
++    try {
++      const task = taskService.toggleSubtask(taskId, subtaskId);
++      if (!task) return this._response(false, undefined, 'Task or subtask not found', 404);
++      return this._response(true, task);
++    } catch (e) {
++      return this._response(false, undefined, 'Subtask toggle failed', 500);
++    }
++  },
++
+   async deleteTask(id: string): Promise<ApiResponse<null>> {
+     await delay(200);
+     try {
+@@ -84,13 +101,82 @@ export const TaskController = {
+     }
+   },
+ 
++  asyncSFStats(): Promise<ApiResponse<TaskStats>> {
++    try {
++      const stats = taskService.getStats();
++      return this._response(true, stats);
++    } catch (e) {
++      return this._response(false, undefined, 'Stats failed', 500);
++    }
++  },
++
+   async getStats(): Promise<ApiResponse<TaskStats>> {
+-    // Stats usually fast
+     try {
+       const stats = taskService.getStats();
+       return this._response(true, stats);
+     } catch (e) {
+       return this._response(false, undefined, 'Stats failed', 500);
+     }
++  },
++
++  // --- Tag Management ---
++
++  async getTags(): Promise<ApiResponse<TaskTag[]>> {
++    await delay(100);
++    try {
++      const tags = db.readTags();
++      return this._response(true, tags);
++    } catch (e) {
++      return this._response(false, undefined, 'Fetch tags failed', 500);
++    }
++  },
++
++  async createTag(name: string, color: string): Promise<ApiResponse<TaskTag>> {
++    await delay(100);
++    try {
++      const tags = db.readTags();
++      const newTag: TaskTag = {
++        id: crypto.randomUUID(),
++        name,
++        color
++      };
++      tags.push(newTag);
++      db.writeTags(tags);
++      return this._response(true, newTag);
++    } catch (e) {
++      return this._response(false, undefined, 'Create tag failed', 500);
++    }
++  },
++
++  // --- Advanced Filtering ---
++
++  async searchTasks(query: FilterQuery): Promise<ApiResponse<Task[]>> {
++    await delay(200);
++    try {
++      const tasks = taskService.filterTasksByQuery(query);
++      return this._response(true, tasks);
++    } catch (e) {
++      return this._response(false, undefined, 'Search failed', 500);
++    }
++  },
++
++  async saveFilterPreset(name: string, query: FilterQuery): Promise<ApiResponse<FilterPreset>> {
++    await delay(100);
++    try {
++      const preset = filterService.savePreset(name, query);
++      return this._response(true, preset);
++    } catch (e) {
++      return this._response(false, undefined, 'Save preset failed', 500);
++    }
++  },
++
++  async getFilterPresets(): Promise<ApiResponse<FilterPreset[]>> {
++    await delay(100);
++    try {
++      const presets = filterService.getPresets();
++      return this._response(true, presets);
++    } catch (e) {
++       return this._response(false, undefined, 'Get presets failed', 500);
++    }
+   }
+ };
+diff --git a/src/server/db/jsonDatabase.ts b/src/server/db/jsonDatabase.ts
+index 991a1a6..5f97a1e 100644
+--- a/src/server/db/jsonDatabase.ts
++++ b/src/server/db/jsonDatabase.ts
+@@ -4,14 +4,36 @@
+ // Path: src/server/db/jsonDatabase.ts
+ // ============================================================================
+ 
+-import { Task, SystemLog } from '../../shared/types/task.types';
++import { Task, SystemLog, FilterPreset, TaskTag, TaskReminder } from '../../shared/types/task.types';
+ import { DB_KEYS } from '../../shared/constants';
+ 
+ class JsonDatabase {
++  // In-memory fallback for environments without localStorage (like Node.js tests)
++  private memoryStorage: Record<string, string> = {};
++
++  // Check if we are running in a browser environment
++  private get isBrowser(): boolean {
++    return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
++  }
++
++  private getItem(key: string): string | null {
++    if (this.isBrowser) {
++      return localStorage.getItem(key);
++    }
++    return this.memoryStorage[key] || null;
++  }
++
++  private setItem(key: string, value: string): void {
++    if (this.isBrowser) {
++      localStorage.setItem(key, value);
++    } else {
++      this.memoryStorage[key] = value;
++    }
++  }
+   
+   readTasks(): Task[] {
+     try {
+-      const data = localStorage.getItem(DB_KEYS.TASKS);
++      const data = this.getItem(DB_KEYS.TASKS);
+       return data ? JSON.parse(data) : [];
+     } catch (e) {
+       console.error("[DB] Read Error", e);
+@@ -21,7 +43,7 @@ class JsonDatabase {
+ 
+   writeTasks(tasks: Task[]): void {
+     try {
+-      localStorage.setItem(DB_KEYS.TASKS, JSON.stringify(tasks));
++      this.setItem(DB_KEYS.TASKS, JSON.stringify(tasks));
+     } catch (e) {
+       console.error("[DB] Write Error", e);
+     }
+@@ -33,15 +55,80 @@ class JsonDatabase {
+       logs.push(log);
+       // Limit logs to prevent localStorage quotas
+       if (logs.length > 200) logs.shift();
+-      localStorage.setItem(DB_KEYS.LOGS, JSON.stringify(logs));
++      this.setItem(DB_KEYS.LOGS, JSON.stringify(logs));
+     } catch (e) {
+       console.error("[DB] Log Error", e);
+     }
+   }
+ 
+   readLogs(): SystemLog[] {
+-    const data = localStorage.getItem(DB_KEYS.LOGS);
+-    return data ? JSON.parse(data) : [];
++    try {
++      const data = this.getItem(DB_KEYS.LOGS);
++      return data ? JSON.parse(data) : [];
++    } catch (e) {
++       console.error("[DB] Log Read Error", e);
++       return [];
++    }
++  }
++
++  // --- Tags ---
++  
++  readTags(): TaskTag[] {
++    try {
++      const data = this.getItem(DB_KEYS.TAGS);
++      return data ? JSON.parse(data) : [];
++    } catch (e) {
++      console.error("[DB] Tags Read Error", e);
++      return [];
++    }
++  }
++
++  writeTags(tags: TaskTag[]): void {
++    try {
++      this.setItem(DB_KEYS.TAGS, JSON.stringify(tags));
++    } catch (e) {
++      console.error("[DB] Tags Write Error", e);
++    }
++  }
++
++  // --- Reminders ---
++
++  readReminders(): TaskReminder[] {
++    try {
++      const data = this.getItem(DB_KEYS.REMINDERS);
++      return data ? JSON.parse(data) : [];
++    } catch (e) {
++      console.error("[DB] Reminders Read Error", e);
++      return [];
++    }
++  }
++
++  writeReminders(reminders: TaskReminder[]): void {
++    try {
++      this.setItem(DB_KEYS.REMINDERS, JSON.stringify(reminders));
++    } catch (e) {
++      console.error("[DB] Reminders Write Error", e);
++    }
++  }
++
++  // --- Filter Presets ---
++
++  readPresets(): FilterPreset[] {
++    try {
++      const data = this.getItem('simplydone_presets_v1');
++      return data ? JSON.parse(data) : [];
++    } catch (e) {
++      console.error("[DB] Presets Read Error", e);
++      return [];
++    }
++  }
++
++  writePresets(presets: FilterPreset[]): void {
++    try {
++      this.setItem('simplydone_presets_v1', JSON.stringify(presets));
++    } catch (e) {
++      console.error("[DB] Presets Write Error", e);
++    }
+   }
+ }
+ 
+diff --git a/src/server/services/taskService.ts b/src/server/services/taskService.ts
+index 16d21d4..dda2363 100644
+--- a/src/server/services/taskService.ts
++++ b/src/server/services/taskService.ts
+@@ -4,8 +4,9 @@
+ // Path: src/server/services/taskService.ts
+ // ============================================================================
+ 
+-import { Task, CreateTaskDTO, UpdateTaskDTO, TaskStats, Priority, SystemLog } from '../../shared/types/task.types';
++import { Task, CreateTaskDTO, UpdateTaskDTO, TaskStats, Priority, SystemLog, FilterQuery, TaskReminder } from '../../shared/types/task.types';
+ import { db } from '../db/jsonDatabase';
++import { filterService } from './filterService';
+ 
+ // Internal Logger Service
+ const Logger = {
+@@ -55,8 +56,11 @@ class TaskService {
+       description: dto.description?.trim(),
+       priority: dto.priority,
+       isCompleted: false,
++      subtasks: [], 
+       createdAt: Date.now(),
+       updatedAt: Date.now(),
++      tags: [],
++      reminders: []
+     };
+ 
+     tasks.push(newTask);
+@@ -96,6 +100,29 @@ class TaskService {
+     return updatedTask;
+   }
+ 
++  toggleSubtask(taskId: string, subtaskId: string): Task | null {
++    const tasks = db.readTasks();
++    const taskIndex = tasks.findIndex(t => t.id === taskId);
++    
++    if (taskIndex === -1) return null;
++    
++    const task = tasks[taskIndex];
++    if (!task.subtasks) task.subtasks = []; 
++
++    const subtaskIndex = task.subtasks.findIndex(s => s.id === subtaskId);
++    if (subtaskIndex === -1) return null;
++
++    // Toggle status
++    task.subtasks[subtaskIndex].isCompleted = !task.subtasks[subtaskIndex].isCompleted;
++    task.updatedAt = Date.now();
++
++    tasks[taskIndex] = task;
++    db.writeTasks(tasks);
++    Logger.info('Subtask toggled', { taskId, subtaskId });
++
++    return task;
++  }
++
+   delete(id: string): boolean {
+     const tasks = db.readTasks();
+     const filtered = tasks.filter(t => t.id !== id);
+@@ -133,6 +160,108 @@ class TaskService {
+       completionRate: total > 0 ? Math.round((completed / total) * 100) : 0
+     };
+   }
++
++  // --- Tag Management ---
++
++  addTagToTask(taskId: string, tagId: string): Task | null {
++    const tasks = db.readTasks();
++    const taskIndex = tasks.findIndex(t => t.id === taskId);
++    if (taskIndex === -1) return null;
++
++    // Fetch tags from DB to verify validity and get details
++    const allTags = db.readTags();
++    const tag = allTags.find(t => t.id === tagId);
++    if (!tag) return null;
++
++    const task = tasks[taskIndex];
++    if (!task.tags) task.tags = [];
++
++    // Avoid duplicates
++    if (!task.tags.some(t => t.id === tagId)) {
++      task.tags.push(tag);
++      task.updatedAt = Date.now();
++      tasks[taskIndex] = task;
++      db.writeTasks(tasks);
++      Logger.info('Tag added to task', { taskId, tagId });
++    }
++
++    return task;
++  }
++
++  removeTagFromTask(taskId: string, tagId: string): Task | null {
++    const tasks = db.readTasks();
++    const taskIndex = tasks.findIndex(t => t.id === taskId);
++    if (taskIndex === -1) return null;
++
++    const task = tasks[taskIndex];
++    if (!task.tags) return task;
++
++    const initialLength = task.tags.length;
++    task.tags = task.tags.filter(t => t.id !== tagId);
++
++    if (task.tags.length !== initialLength) {
++      task.updatedAt = Date.now();
++      tasks[taskIndex] = task;
++      db.writeTasks(tasks);
++      Logger.info('Tag removed from task', { taskId, tagId });
++    }
++
++    return task;
++  }
++
++  // --- Reminder Management ---
++
++  addReminderToTask(taskId: string, time: number, message: string): Task | null {
++    const tasks = db.readTasks();
++    const taskIndex = tasks.findIndex(t => t.id === taskId);
++    if (taskIndex === -1) return null;
++
++    const task = tasks[taskIndex];
++    if (!task.reminders) task.reminders = [];
++
++    const reminder: TaskReminder = {
++      id: crypto.randomUUID(),
++      taskId,
++      time,
++      message
++    };
++
++    task.reminders.push(reminder);
++    task.updatedAt = Date.now();
++    tasks[taskIndex] = task;
++    db.writeTasks(tasks);
++    Logger.info('Reminder added to task', { taskId, time });
++
++    return task;
++  }
++
++  removeReminderFromTask(taskId: string, reminderId: string): Task | null {
++    const tasks = db.readTasks();
++    const taskIndex = tasks.findIndex(t => t.id === taskId);
++    if (taskIndex === -1) return null;
++
++    const task = tasks[taskIndex];
++    if (!task.reminders) return task;
++
++    const initialLength = task.reminders.length;
++    task.reminders = task.reminders.filter(r => r.id !== reminderId);
++
++    if (task.reminders.length !== initialLength) {
++      task.updatedAt = Date.now();
++      tasks[taskIndex] = task;
++      db.writeTasks(tasks);
++      Logger.info('Reminder removed from task', { taskId, reminderId });
++    }
++
++    return task;
++  }
++
++  // --- New: Task 005 Filter Integration ---
++  
++  filterTasksByQuery(query: FilterQuery): Task[] {
++    const allTasks = this.getAll();
++    return filterService.executeQuery(allTasks, query);
++  }
+ }
+ 
+ export const taskService = new TaskService();
+diff --git a/src/shared/constants.ts b/src/shared/constants.ts
+index 30fcd12..cdab3ec 100644
+--- a/src/shared/constants.ts
++++ b/src/shared/constants.ts
+@@ -11,6 +11,8 @@ export const APP_VERSION = "2.1.0";
+ export const DB_KEYS = {
+   TASKS: 'simplydone_tasks_v3',
+   LOGS: 'simplydone_logs_v3',
++  TAGS: 'simplydone_tags_v1',
++  REMINDERS: 'simplydone_reminders_v1',
+ };
+ 
+ // Validation Constraints
+diff --git a/src/shared/types/task.types.ts b/src/shared/types/task.types.ts
+index 00b22be..3825a50 100644
+--- a/src/shared/types/task.types.ts
++++ b/src/shared/types/task.types.ts
+@@ -23,6 +23,34 @@ export enum SortOption {
+   PRIORITY_ASC = 'PRIORITY_ASC',
+ }
+ 
++/**
++ * Subtask item structure.
++ */
++export interface SubTask {
++  id: string;
++  text: string;
++  isCompleted: boolean;
++}
++
++/**
++ * Tag structure.
++ */
++export interface TaskTag {
++  id: string;
++  name: string;
++  color: string;
++}
++
++/**
++ * Reminder structure.
++ */
++export interface TaskReminder {
++  id: string;
++  taskId: string;
++  time: number;
++  message: string;
++}
++
+ /**
+  * The core Task object.
+  */
+@@ -32,9 +60,12 @@ export interface Task {
+   description?: string;
+   isCompleted: boolean;
+   priority: Priority;
++  subtasks: SubTask[];
+   createdAt: number;
+   updatedAt: number;
+   completedAt?: number;
++  tags: TaskTag[]; 
++  reminders: TaskReminder[]; 
+ }
+ 
+ /**
+@@ -79,10 +110,11 @@ export interface UpdateTaskDTO {
+   isCompleted?: boolean;
+   priority?: Priority;
+   description?: string;
++  subtasks?: SubTask[];
+ }
+ 
+ /**
+- * Log entry for the backend logger.
++ * System Log entry structure used in server logs.
+  */
+ export interface SystemLog {
+   id: string;
+@@ -91,3 +123,38 @@ export interface SystemLog {
+   timestamp: number;
+   context?: any;
+ }
++
++// --- Advanced Filtering Types ---
++
++export enum FilterOperator {
++  EQUALS = 'EQUALS',
++  NOT_EQUALS = 'NOT_EQUALS',
++  CONTAINS = 'CONTAINS',
++  STARTS_WITH = 'STARTS_WITH',
++  ENDS_WITH = 'ENDS_WITH',
++}
++
++export type TaskField = 'text' | 'description' | 'priority' | 'isCompleted';
++
++export interface FilterCondition {
++  id: string;
++  field: TaskField;
++  operator: FilterOperator;
++  value: string | boolean | number;
++}
++
++export enum FilterLogic {
++  AND = 'AND',
++  OR = 'OR'
++}
++
++export interface FilterQuery {
++  logic: FilterLogic;
++  conditions: FilterCondition[];
++}
++
++export interface FilterPreset {
++  id: string;
++  name: string;
++  query: FilterQuery;
++}
+diff --git a/tsconfig.json b/tsconfig.json
+index 2c6eed5..4247ac1 100644
+--- a/tsconfig.json
++++ b/tsconfig.json
+@@ -1,29 +1,22 @@
+ {
+   "compilerOptions": {
+     "target": "ES2022",
+-    "experimentalDecorators": true,
+-    "useDefineForClassFields": false,
+     "module": "ESNext",
+-    "lib": [
+-      "ES2022",
+-      "DOM",
+-      "DOM.Iterable"
+-    ],
+-    "skipLibCheck": true,
+-    "types": [
+-      "node"
+-    ],
+     "moduleResolution": "bundler",
++    "jsx": "react-jsx",
++    "lib": ["ES2022", "DOM", "DOM.Iterable"],
++
+     "isolatedModules": true,
+     "moduleDetection": "force",
+-    "allowJs": true,
+-    "jsx": "react-jsx",
++    "useDefineForClassFields": false,
++    "skipLibCheck": true,
++    "noEmit": true,
++
++    "baseUrl": ".",
+     "paths": {
+-      "@/*": [
+-        "./*"
+-      ]
+-    },
+-    "allowImportingTsExtensions": true,
+-    "noEmit": true
+-  }
++      "@/*": ["./*"]
++    }
++  },
++  "include": ["src", "index.tsx", "vite-env.d.ts"],
++  "exclude": ["dist", "node_modules"]
+ }
+\ No newline at end of file
