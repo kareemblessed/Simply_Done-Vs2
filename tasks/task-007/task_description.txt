@@ -1,23 +1,28 @@
-task_description: task-007
+task_description:
+task-007
 Implement optimistic updates in App.tsx state management, where UI updates immediately while apiService requests resolve, with automatic rollback on failure.
+
 requirements:
 
-Add OptimisticUpdate tracking to App state
-Update TaskList to display optimistic changes immediately
-Implement rollback logic on apiService failures
-Create undo mechanism for failed operations
-Show loading indicators in TaskItem component
-Maintain pending operation queue correctly
+-Create OptimisticUpdate type with id/optimistic/pending
+-Add pending operation tracking in App state
+-Update TaskList to display optimistic changes immediately
+-Implement rollback logic on apiService failures
+-Create undo mechanism for failed operations
+-Show loading indicators in TaskItem component
 
 Success_criteria:
 
-All 6 tests pass
-UI updates before apiService resolves
-Failed requests restore previous state
-Previous state restored exactly
-Multiple operations queue in order
-Loading indicators display on TaskItem
-Undo restores state on failure
+-All 9 tests should pass
+-UI displays progress (before apiService resolves).
+-Previous state restored exactly
+-Unsuccessful requests Should be able to be restored to their previous state.
+-Several processes queue sequentially.
+-Loading indicators should be able to be displayed on TaskItem
+-Undo restores state on failure
+-Optimistic state matches expected output
+-Make sure that the Concurrent updates do not corrupt state
+-To solve this task, you should create two new files: src/hooks/useOptimisticUpdate.ts and src/utils/optimisticStateManager.ts
 
 author_name: kareemblessed
 author_email: blessedronan@gmail.com
