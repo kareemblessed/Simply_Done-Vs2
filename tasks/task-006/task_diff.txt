@@ -1,0 +1,1250 @@
+diff --git a/src/client/App.tsx b/src/client/App.tsx
+index bcdbba9..7efe396 100644
+--- a/src/client/App.tsx
++++ b/src/client/App.tsx
+@@ -1,6 +1,6 @@
+ 
+ import React, { useEffect, useState, useMemo } from 'react';
+-import { Task, Priority, TaskStats, SortOption } from '../shared/types/task.types';
++import { Task, Priority, TaskStats, SortOption, FilterQuery, FilterLogic, FilterCondition, FilterOperator, TaskField, FilterPreset } from '../shared/types/task.types';
+ import { getPriorityWeight } from '../shared/utils/helpers';
+ import { apiService } from './services/apiService';
+ import { TaskForm } from './components/TaskForm';
+@@ -8,6 +8,92 @@ import { FilterBar } from './components/FilterBar';
+ import { StatsCard } from './components/StatsCard';
+ import { TaskList } from './components/TaskList';
+ 
++// --- Inlined Filter Component (to avoid separate file complexity) ---
++interface InlinedFilterComposerProps {
++  onSearch: (query: FilterQuery) => void;
++  onClear: () => void;
++}
++
++const InlinedFilterComposer: React.FC<InlinedFilterComposerProps> = ({ onSearch, onClear }) => {
++  const [conditions, setConditions] = useState<FilterCondition[]>([]);
++  const [logic, setLogic] = useState<FilterLogic>(FilterLogic.AND);
++  const [presets, setPresets] = useState<FilterPreset[]>([]);
++  const [presetName, setPresetName] = useState('');
++
++  useEffect(() => {
++    apiService.getFilterPresets().then(setPresets).catch(console.error);
++  }, []);
++
++  const addCondition = () => {
++    setConditions([...conditions, { id: crypto.randomUUID(), field: 'text', operator: FilterOperator.CONTAINS, value: '' }]);
++  };
++
++  const updateCondition = (id: string, u: Partial<FilterCondition>) => {
++    setConditions(conditions.map(c => c.id === id ? { ...c, ...u } : c));
++  };
++
++  const handleSearch = () => {
++    onSearch({ logic, conditions });
++  };
++
++  const handleSave = async () => {
++    if (!presetName) return;
++    try {
++      await apiService.saveFilterPreset(presetName, { logic, conditions });
++      setPresetName('');
++      apiService.getFilterPresets().then(setPresets);
++    } catch(e) { alert("Save failed"); }
++  };
++
++  return (
++    <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 mb-6">
++       <div className="flex gap-4 mb-4 items-center">
++         <span className="text-xs font-bold text-slate-500">Match:</span>
++         <div className="flex bg-white rounded-lg p-1 border">
++           {[FilterLogic.AND, FilterLogic.OR].map(l => (
++             <button key={l} onClick={() => setLogic(l)} className={`px-3 py-1 text-xs font-bold rounded ${logic === l ? 'bg-indigo-100 text-indigo-700' : 'text-slate-500'}`}>{l}</button>
++           ))}
++         </div>
++       </div>
++       <div className="space-y-2 mb-4">
++         {conditions.map(c => (
++           <div key={c.id} className="flex gap-2 items-center bg-white p-2 rounded border">
++             <select className="text-xs bg-transparent" value={c.field} onChange={e => updateCondition(c.id, { field: e.target.value as TaskField })}>
++               <option value="text">Name</option>
++               <option value="priority">Priority</option>
++               <option value="isCompleted">Status</option>
++             </select>
++             <select className="text-xs bg-transparent" value={c.operator} onChange={e => updateCondition(c.id, { operator: e.target.value as FilterOperator })}>
++               <option value={FilterOperator.EQUALS}>Equals</option>
++               <option value={FilterOperator.CONTAINS}>Contains</option>
++             </select>
++             <input className="text-xs border rounded p-1 flex-1" value={String(c.value)} onChange={e => updateCondition(c.id, { value: e.target.value })} />
++             <button onClick={() => setConditions(conditions.filter(x => x.id !== c.id))} className="text-red-500">x</button>
++           </div>
++         ))}
++         <button onClick={addCondition} className="text-xs text-indigo-600 font-bold">+ Add Condition</button>
++       </div>
++       <div className="flex justify-between border-t pt-4">
++         <div className="flex gap-2">
++           <select className="text-xs border rounded" onChange={(e) => {
++             const p = presets.find(x => x.id === e.target.value);
++             if(p) { setLogic(p.query.logic); setConditions(p.query.conditions); }
++           }}>
++             <option value="">Load Preset...</option>
++             {presets.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
++           </select>
++           <input placeholder="Name" className="text-xs border rounded w-20 px-1" value={presetName} onChange={e => setPresetName(e.target.value)} />
++           <button onClick={handleSave} className="text-xs bg-slate-200 px-2 rounded">Save</button>
++         </div>
++         <div className="flex gap-2">
++           <button onClick={onClear} className="text-xs text-slate-500 font-bold px-3 py-1">Clear</button>
++           <button onClick={handleSearch} className="text-xs bg-indigo-600 text-white font-bold px-4 py-1 rounded-lg">Apply</button>
++         </div>
++       </div>
++    </div>
++  );
++};
++
+ const App: React.FC = () => {
+   // --- State ---
+   const [tasks, setTasks] = useState<Task[]>([]);
+@@ -18,6 +104,11 @@ const App: React.FC = () => {
+   // UI State
+   const [filter, setFilter] = useState<'ALL' | 'ACTIVE' | 'COMPLETED'>('ALL');
+   const [sort, setSort] = useState<SortOption>(SortOption.NEWEST);
++  
++  // Search State
++  const [isSearching, setIsSearching] = useState(false);
++  const [searchResults, setSearchResults] = useState<Task[]>([]);
++  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
+ 
+   // --- Actions ---
+   const refreshData = async () => {
+@@ -56,22 +147,61 @@ const App: React.FC = () => {
+     } catch (err: any) { alert(err.message); }
+   };
+ 
++  const handleEditTask = async (id: string, updates: Partial<Task>) => {
++    try {
++      const updated = await apiService.updateTask(id, updates);
++      const updateList = (list: Task[]) => list.map(t => t.id === id ? updated : t);
++      setTasks(prev => updateList(prev));
++      if (isSearching) setSearchResults(prev => updateList(prev));
++      await updateStats();
++    } catch (err: any) { alert(err.message); }
++  };
++
+   const handleToggleTask = async (id: string, currentStatus: boolean) => {
+-    setTasks(prev => prev.map(t => t.id === id ? { ...t, isCompleted: !currentStatus } : t));
++    const updateList = (list: Task[]) => list.map(t => t.id === id ? { ...t, isCompleted: !currentStatus } : t);
++    setTasks(prev => updateList(prev));
++    if (isSearching) setSearchResults(prev => updateList(prev));
++
+     try {
+       await apiService.toggleTask(id, currentStatus);
+       await updateStats();
+     } catch (err: any) { refreshData(); alert(err.message); }
+   };
+ 
++  const handleToggleSubtask = async (taskId: string, subtaskId: string) => {
++     const updateList = (list: Task[]) => list.map(t => {
++       if (t.id !== taskId) return t;
++       return {
++         ...t,
++         subtasks: t.subtasks.map(s => s.id === subtaskId ? { ...s, isCompleted: !s.isCompleted } : s)
++       };
++     });
++     
++     setTasks(prev => updateList(prev));
++     if (isSearching) setSearchResults(prev => updateList(prev));
++
++     try {
++       await apiService.toggleSubtask(taskId, subtaskId);
++     } catch (err: any) { refreshData(); alert(err.message); }
++  };
++
+   const handleDeleteTask = async (id: string) => {
+     if (!confirm('Delete this task?')) return;
+-    const old = [...tasks];
++    
++    // Backup for rollback
++    const oldTasks = [...tasks];
++    
+     setTasks(prev => prev.filter(t => t.id !== id));
++    if (isSearching) setSearchResults(prev => prev.filter(t => t.id !== id));
++
+     try {
+       await apiService.deleteTask(id);
+       await updateStats();
+-    } catch (err: any) { setTasks(old); alert(err.message); }
++    } catch (err: any) { 
++      setTasks(oldTasks); 
++      alert(err.message); 
++      refreshData();
++    }
+   };
+ 
+   const handleClearCompleted = async () => {
+@@ -79,15 +209,44 @@ const App: React.FC = () => {
+     try {
+       await apiService.clearCompleted();
+       setTasks(prev => prev.filter(t => !t.isCompleted));
++      if (isSearching) setSearchResults(prev => prev.filter(t => !t.isCompleted));
+       await updateStats();
+     } catch (err: any) { alert(err.message); }
+   };
+ 
+-  // --- Logic ---
+-  const processedTasks = useMemo(() => {
+-    let result = [...tasks];
+-    if (filter === 'ACTIVE') result = result.filter(t => !t.isCompleted);
+-    else if (filter === 'COMPLETED') result = result.filter(t => t.isCompleted);
++  // --- Search Logic ---
++  const handleAdvancedSearch = async (query: FilterQuery) => {
++    if (query.conditions.length === 0) {
++      setIsSearching(false);
++      return;
++    }
++    
++    setLoading(true);
++    try {
++      const results = await apiService.searchTasks(query);
++      setSearchResults(results);
++      setIsSearching(true);
++    } catch (e: any) {
++      alert("Search failed: " + e.message);
++    } finally {
++      setLoading(false);
++    }
++  };
++
++  const clearSearch = () => {
++    setIsSearching(false);
++    setSearchResults([]);
++  };
++
++  // --- View Logic ---
++  const displayedTasks = useMemo(() => {
++    let result = isSearching ? [...searchResults] : [...tasks];
++    
++    // Apply local filters only if NOT searching
++    if (!isSearching) {
++        if (filter === 'ACTIVE') result = result.filter(t => !t.isCompleted);
++        else if (filter === 'COMPLETED') result = result.filter(t => t.isCompleted);
++    }
+ 
+     result.sort((a, b) => {
+       switch (sort) {
+@@ -99,7 +258,7 @@ const App: React.FC = () => {
+       }
+     });
+     return result;
+-  }, [tasks, filter, sort]);
++  }, [tasks, searchResults, isSearching, filter, sort]);
+ 
+   return (
+     <div className="min-h-screen py-12 px-4 sm:px-6 lg:px-8 font-sans text-slate-900 relative">
+@@ -123,14 +282,30 @@ const App: React.FC = () => {
+ 
+         {/* Main List Area */}
+         <div className="bg-white/60 backdrop-blur-2xl rounded-[2.5rem] p-8 shadow-2xl shadow-indigo-100/50 border border-white">
+-          <FilterBar 
+-            currentFilter={filter}
+-            currentSort={sort}
+-            onFilterChange={setFilter}
+-            onSortChange={setSort}
+-            onClearCompleted={handleClearCompleted}
+-            hasCompleted={tasks.some(t => t.isCompleted)}
+-          />
++          
++          {showAdvancedFilters && (
++             <InlinedFilterComposer onSearch={handleAdvancedSearch} onClear={clearSearch} />
++          )}
++
++          {isSearching ? (
++             <div className="flex justify-between items-center mb-6 pb-4 border-b border-indigo-100">
++               <h3 className="text-lg font-bold text-indigo-900">
++                  Search Results <span className="text-slate-400 text-sm font-normal">({searchResults.length} matches)</span>
++               </h3>
++               <button onClick={clearSearch} className="text-xs font-bold text-red-500 hover:text-red-700">Clear Search</button>
++             </div>
++          ) : (
++             <FilterBar 
++               currentFilter={filter}
++               currentSort={sort}
++               onFilterChange={setFilter}
++               onSortChange={setSort}
++               onClearCompleted={handleClearCompleted}
++               hasCompleted={tasks.some(t => t.isCompleted)}
++               onToggleAdvanced={() => setShowAdvancedFilters(!showAdvancedFilters)}
++               isAdvancedActive={showAdvancedFilters}
++             />
++          )}
+ 
+           {error && (
+             <div className="mb-6 p-4 bg-red-50 text-red-700 rounded-2xl border border-red-100 flex items-center gap-3">
+@@ -140,11 +315,14 @@ const App: React.FC = () => {
+           )}
+ 
+           <TaskList 
+-            tasks={processedTasks}
++            tasks={displayedTasks}
+             loading={loading}
+             onToggle={handleToggleTask}
++            onToggleSubtask={handleToggleSubtask}
+             onDelete={handleDeleteTask}
++            onEdit={handleEditTask}
+             emptyMessage={
++              isSearching ? "No tasks matched your detailed criteria." :
+               filter === 'ALL' ? "Your list is empty. Add a task above to get started!" 
+               : filter === 'ACTIVE' ? "You're all caught up! Great job." 
+               : "Finish some tasks to see them here."
+@@ -154,7 +332,7 @@ const App: React.FC = () => {
+ 
+         <div className="mt-12 text-center opacity-60">
+            <p className="text-[10px] text-slate-500 font-bold tracking-[0.2em] uppercase">
+-             v2.1 • LocalStorage Database • Secure
++             v2.4 • Advanced Filters • Smart Caching
+            </p>
+         </div>
+       </div>
+diff --git a/src/client/components/FilterBar.tsx b/src/client/components/FilterBar.tsx
+index 8f938bc..3fd0806 100644
+--- a/src/client/components/FilterBar.tsx
++++ b/src/client/components/FilterBar.tsx
+@@ -9,6 +9,8 @@ interface FilterBarProps {
+   onSortChange: (s: SortOption) => void;
+   onClearCompleted: () => void;
+   hasCompleted: boolean;
++  onToggleAdvanced?: () => void;
++  isAdvancedActive?: boolean;
+ }
+ 
+ export const FilterBar: React.FC<FilterBarProps> = ({ 
+@@ -17,7 +19,9 @@ export const FilterBar: React.FC<FilterBarProps> = ({
+   onFilterChange, 
+   onSortChange,
+   onClearCompleted,
+-  hasCompleted
++  hasCompleted,
++  onToggleAdvanced,
++  isAdvancedActive
+ }) => {
+   return (
+     <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6 pb-6 border-b border-slate-100">
+@@ -54,6 +58,19 @@ export const FilterBar: React.FC<FilterBarProps> = ({
+           </div>
+         </div>
+ 
++        {onToggleAdvanced && (
++           <button
++             onClick={onToggleAdvanced}
++             className={`text-xs font-bold px-4 py-2 rounded-xl transition-all duration-300 border ${
++               isAdvancedActive 
++               ? 'bg-indigo-50 text-indigo-600 border-indigo-200' 
++               : 'text-slate-500 border-transparent hover:bg-slate-100'
++             }`}
++           >
++             Filters
++           </button>
++        )}
++
+         {hasCompleted && (
+           <button
+             onClick={onClearCompleted}
+diff --git a/src/client/services/apiService.ts b/src/client/services/apiService.ts
+index c53d3aa..2026785 100644
+--- a/src/client/services/apiService.ts
++++ b/src/client/services/apiService.ts
+@@ -4,8 +4,15 @@
+ // Path: src/client/services/apiService.ts
+ // ============================================================================
+ 
+-import { Task, CreateTaskDTO, UpdateTaskDTO, TaskStats, Priority } from '../../shared/types/task.types';
++import { Task, CreateTaskDTO, UpdateTaskDTO, TaskStats, Priority, FilterQuery, FilterPreset, TaskTag } from '../../shared/types/task.types';
+ import { TaskController } from '../../server/index';
++import { cacheMiddleware } from '../middleware/cacheMiddleware';
++
++// Client Cache Keys
++const KEYS = {
++  TASKS: 'CLIENT_TASKS',
++  STATS: 'CLIENT_STATS'
++};
+ 
+ /**
+  * Handles communication between Frontend components and the Backend Controller.
+@@ -13,8 +20,21 @@ import { TaskController } from '../../server/index';
+ export const apiService = {
+   
+   async fetchTasks(): Promise<Task[]> {
++    // Middleware Check
++    const cached = cacheMiddleware.get<Task[]>(KEYS.TASKS);
++    if (cached) return cached;
++
+     const response = await TaskController.getTasks();
+     if (!response.success || !response.data) throw new Error(response.error);
++    
++    // Cache result
++    cacheMiddleware.set(KEYS.TASKS, response.data);
++    return response.data;
++  },
++
++  async searchTasks(query: FilterQuery): Promise<Task[]> {
++    const response = await TaskController.searchTasks(query);
++    if (!response.success || !response.data) throw new Error(response.error);
+     return response.data;
+   },
+ 
+@@ -22,6 +42,20 @@ export const apiService = {
+     const payload: CreateTaskDTO = { text, priority, description };
+     const response = await TaskController.createTask(payload);
+     if (!response.success || !response.data) throw new Error(response.error);
++    
++    // Invalidate Middleware Cache on Mutation
++    cacheMiddleware.invalidateAll();
++    
++    return response.data;
++  },
++
++  async updateTask(id: string, updates: UpdateTaskDTO): Promise<Task> {
++    const response = await TaskController.updateTask(id, updates);
++    if (!response.success || !response.data) throw new Error(response.error);
++    
++    // Invalidate Middleware Cache on Mutation
++    cacheMiddleware.invalidateAll();
++
+     return response.data;
+   },
+ 
+@@ -29,23 +63,74 @@ export const apiService = {
+     const payload: UpdateTaskDTO = { isCompleted: !currentStatus };
+     const response = await TaskController.updateTask(id, payload);
+     if (!response.success || !response.data) throw new Error(response.error);
++    
++    cacheMiddleware.invalidateAll();
++
++    return response.data;
++  },
++
++  async toggleSubtask(taskId: string, subtaskId: string): Promise<Task> {
++    const response = await TaskController.toggleSubtask(taskId, subtaskId);
++    if (!response.success || !response.data) throw new Error(response.error);
++    
++    cacheMiddleware.invalidateAll();
++
+     return response.data;
+   },
+ 
+   async deleteTask(id: string): Promise<void> {
+     const response = await TaskController.deleteTask(id);
+     if (!response.success) throw new Error(response.error);
++    
++    cacheMiddleware.invalidateAll();
+   },
+ 
+   async clearCompleted(): Promise<number> {
+     const response = await TaskController.clearCompleted();
+     if (!response.success || !response.data) throw new Error(response.error);
++    
++    cacheMiddleware.invalidateAll();
++
+     return response.data.count;
+   },
+ 
+   async getStats(): Promise<TaskStats> {
++    const cached = cacheMiddleware.get<TaskStats>(KEYS.STATS);
++    if (cached) return cached;
++
+     const response = await TaskController.getStats();
+     if (!response.success || !response.data) throw new Error(response.error);
++    
++    cacheMiddleware.set(KEYS.STATS, response.data);
++
++    return response.data;
++  },
++
++  // --- Filter Presets ---
++
++  async getFilterPresets(): Promise<FilterPreset[]> {
++    const response = await TaskController.getFilterPresets();
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
++  async saveFilterPreset(name: string, query: FilterQuery): Promise<FilterPreset> {
++    const response = await TaskController.saveFilterPreset(name, query);
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
++  // --- Tags ---
++
++  async fetchTags(): Promise<TaskTag[]> {
++    const response = await TaskController.getTags();
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
++  async createTag(name: string, color: string): Promise<TaskTag> {
++    const response = await TaskController.createTag(name, color);
++    if (!response.success || !response.data) throw new Error(response.error);
+     return response.data;
+   }
+-};
++};
+\ No newline at end of file
+diff --git a/src/server/controllers/taskController.ts b/src/server/controllers/taskController.ts
+index 4028278..0c40e7d 100644
+--- a/src/server/controllers/taskController.ts
++++ b/src/server/controllers/taskController.ts
+@@ -4,11 +4,18 @@
+ // Path: src/server/controllers/taskController.ts
+ // ============================================================================
+ 
+-import { Task, ApiResponse, CreateTaskDTO, UpdateTaskDTO, TaskStats } from '../../shared/types/task.types';
++import { Task, ApiResponse, CreateTaskDTO, UpdateTaskDTO, TaskStats, FilterQuery, FilterPreset, TaskTag } from '../../shared/types/task.types';
+ import { TaskValidator } from '../validators/taskValidator';
+ import { taskService } from '../services/taskService';
++import { cacheService } from '../services/cacheService';
+ import { delay } from '../../shared/utils/helpers';
+ 
++// Response Cache Keys
++const RESP_KEYS = {
++  GET_TASKS: 'RESP_GET_TASKS',
++  GET_STATS: 'RESP_GET_STATS'
++};
++
+ export const TaskController = {
+   
+   _response<T>(success: boolean, data?: T, error?: string, statusCode: number = 200): ApiResponse<T> {
+@@ -24,24 +31,45 @@ export const TaskController = {
+     };
+   },
+ 
++  _invalidateCaches() {
++    cacheService.invalidate(RESP_KEYS.GET_TASKS);
++    cacheService.invalidate(RESP_KEYS.GET_STATS);
++  },
++
+   async getTasks(): Promise<ApiResponse<Task[]>> {
+-    await delay(300); // Simulate network
++    const cached = cacheService.get<ApiResponse<Task[]>>(RESP_KEYS.GET_TASKS);
++    if (cached) return cached;
++
++    await delay(300); 
+     try {
+       const tasks = taskService.getAll();
+-      return this._response(true, tasks);
++      const response = this._response(true, tasks);
++      cacheService.set(RESP_KEYS.GET_TASKS, response);
++      return response;
+     } catch (e) {
+       return this._response(false, undefined, 'Internal Server Error', 500);
+     }
+   },
+ 
++  async searchTasks(query: FilterQuery): Promise<ApiResponse<Task[]>> {
++    await delay(300);
++    try {
++      // Use taskService logic
++      const results = taskService.filterTasksByQuery(query);
++      return this._response(true, results);
++    } catch (e) {
++      return this._response(false, undefined, 'Search failed', 500);
++    }
++  },
++
+   async createTask(dto: CreateTaskDTO): Promise<ApiResponse<Task>> {
+     await delay(300);
+-    
+     const error = TaskValidator.validateCreate(dto);
+     if (error) return this._response(false, undefined, error, 400);
+ 
+     try {
+       const task = taskService.create(dto);
++      this._invalidateCaches();
+       return this._response(true, task, undefined, 201);
+     } catch (e) {
+       return this._response(false, undefined, 'Creation failed', 500);
+@@ -50,24 +78,37 @@ export const TaskController = {
+ 
+   async updateTask(id: string, dto: UpdateTaskDTO): Promise<ApiResponse<Task>> {
+     await delay(200);
+-
+     const error = TaskValidator.validateUpdate(dto);
+     if (error) return this._response(false, undefined, error, 400);
+ 
+     try {
+       const task = taskService.update(id, dto);
+       if (!task) return this._response(false, undefined, 'Task not found', 404);
++      this._invalidateCaches();
+       return this._response(true, task);
+     } catch (e) {
+       return this._response(false, undefined, 'Update failed', 500);
+     }
+   },
+ 
++  async toggleSubtask(taskId: string, subtaskId: string): Promise<ApiResponse<Task>> {
++    await delay(150);
++    try {
++      const task = taskService.toggleSubtask(taskId, subtaskId);
++      if (!task) return this._response(false, undefined, 'Task or subtask not found', 404);
++      this._invalidateCaches();
++      return this._response(true, task);
++    } catch (e) {
++      return this._response(false, undefined, 'Subtask toggle failed', 500);
++    }
++  },
++
+   async deleteTask(id: string): Promise<ApiResponse<null>> {
+     await delay(200);
+     try {
+       const success = taskService.delete(id);
+       if (!success) return this._response(false, undefined, 'Task not found', 404);
++      this._invalidateCaches();
+       return this._response(true, null, undefined, 204);
+     } catch (e) {
+       return this._response(false, undefined, 'Delete failed', 500);
+@@ -78,6 +119,7 @@ export const TaskController = {
+     await delay(400);
+     try {
+       const count = taskService.clearCompleted();
++      this._invalidateCaches();
+       return this._response(true, { count });
+     } catch (e) {
+       return this._response(false, undefined, 'Clear failed', 500);
+@@ -85,12 +127,61 @@ export const TaskController = {
+   },
+ 
+   async getStats(): Promise<ApiResponse<TaskStats>> {
+-    // Stats usually fast
++    const cached = cacheService.get<ApiResponse<TaskStats>>(RESP_KEYS.GET_STATS);
++    if (cached) return cached;
++
+     try {
+       const stats = taskService.getStats();
+-      return this._response(true, stats);
++      const response = this._response(true, stats);
++      cacheService.set(RESP_KEYS.GET_STATS, response);
++      return response;
+     } catch (e) {
+       return this._response(false, undefined, 'Stats failed', 500);
+     }
++  },
++
++  // --- Filter Presets Endpoints ---
++
++  async getFilterPresets(): Promise<ApiResponse<FilterPreset[]>> {
++    await delay(100);
++    try {
++      const presets = taskService.getPresets();
++      return this._response(true, presets);
++    } catch (e) {
++      return this._response(false, undefined, 'Failed to fetch presets', 500);
++    }
++  },
++
++  async saveFilterPreset(name: string, query: FilterQuery): Promise<ApiResponse<FilterPreset>> {
++    await delay(200);
++    try {
++      const preset = taskService.savePreset(name, query);
++      return this._response(true, preset, undefined, 201);
++    } catch (e) {
++      return this._response(false, undefined, 'Failed to save preset', 500);
++    }
++  },
++
++  // --- Tag Endpoints ---
++
++  async getTags(): Promise<ApiResponse<TaskTag[]>> {
++    await delay(100);
++    try {
++      const tags = taskService.getAllTags();
++      return this._response(true, tags);
++    } catch (e) {
++      return this._response(false, undefined, 'Failed to fetch tags', 500);
++    }
++  },
++
++  async createTag(name: string, color: string): Promise<ApiResponse<TaskTag>> {
++    await delay(200);
++    if (!name) return this._response(false, undefined, 'Tag name required', 400);
++    try {
++      const tag = taskService.createTag(name, color);
++      return this._response(true, tag, undefined, 201);
++    } catch (e) {
++      return this._response(false, undefined, 'Failed to create tag', 500);
++    }
+   }
+ };
+diff --git a/src/server/db/jsonDatabase.ts b/src/server/db/jsonDatabase.ts
+index 991a1a6..f5bb1c1 100644
+--- a/src/server/db/jsonDatabase.ts
++++ b/src/server/db/jsonDatabase.ts
+@@ -4,14 +4,36 @@
+ // Path: src/server/db/jsonDatabase.ts
+ // ============================================================================
+ 
+-import { Task, SystemLog } from '../../shared/types/task.types';
++import { Task, SystemLog, CacheEntry, TaskTag, FilterPreset } from '../../shared/types/task.types';
+ import { DB_KEYS } from '../../shared/constants';
+ 
+ class JsonDatabase {
++  // In-memory fallback for environments without localStorage (like Node.js tests)
++  private memoryStorage: Record<string, string> = {};
++
++  // Check if we are running in a browser environment
++  private get isBrowser(): boolean {
++    return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
++  }
++
++  private getItem(key: string): string | null {
++    if (this.isBrowser) {
++      return localStorage.getItem(key);
++    }
++    return this.memoryStorage[key] || null;
++  }
++
++  private setItem(key: string, value: string): void {
++    if (this.isBrowser) {
++      localStorage.setItem(key, value);
++    } else {
++      this.memoryStorage[key] = value;
++    }
++  }
+   
+   readTasks(): Task[] {
+     try {
+-      const data = localStorage.getItem(DB_KEYS.TASKS);
++      const data = this.getItem(DB_KEYS.TASKS);
+       return data ? JSON.parse(data) : [];
+     } catch (e) {
+       console.error("[DB] Read Error", e);
+@@ -21,27 +43,87 @@ class JsonDatabase {
+ 
+   writeTasks(tasks: Task[]): void {
+     try {
+-      localStorage.setItem(DB_KEYS.TASKS, JSON.stringify(tasks));
++      this.setItem(DB_KEYS.TASKS, JSON.stringify(tasks));
+     } catch (e) {
+       console.error("[DB] Write Error", e);
+     }
+   }
+ 
++  readTags(): TaskTag[] {
++    try {
++      const data = this.getItem(DB_KEYS.TAGS);
++      return data ? JSON.parse(data) : [];
++    } catch (e) {
++      console.error("[DB] Tags Read Error", e);
++      return [];
++    }
++  }
++
++  writeTags(tags: TaskTag[]): void {
++    try {
++      this.setItem(DB_KEYS.TAGS, JSON.stringify(tags));
++    } catch (e) {
++      console.error("[DB] Tags Write Error", e);
++    }
++  }
++
++  readPresets(): FilterPreset[] {
++    try {
++      const data = this.getItem(DB_KEYS.PRESETS);
++      return data ? JSON.parse(data) : [];
++    } catch (e) {
++      console.error("[DB] Presets Read Error", e);
++      return [];
++    }
++  }
++
++  writePresets(presets: FilterPreset[]): void {
++    try {
++      this.setItem(DB_KEYS.PRESETS, JSON.stringify(presets));
++    } catch (e) {
++      console.error("[DB] Presets Write Error", e);
++    }
++  }
++
+   writeLog(log: SystemLog): void {
+     try {
+       const logs = this.readLogs();
+       logs.push(log);
+       // Limit logs to prevent localStorage quotas
+       if (logs.length > 200) logs.shift();
+-      localStorage.setItem(DB_KEYS.LOGS, JSON.stringify(logs));
++      this.setItem(DB_KEYS.LOGS, JSON.stringify(logs));
+     } catch (e) {
+       console.error("[DB] Log Error", e);
+     }
+   }
+ 
+   readLogs(): SystemLog[] {
+-    const data = localStorage.getItem(DB_KEYS.LOGS);
+-    return data ? JSON.parse(data) : [];
++    try {
++      const data = this.getItem(DB_KEYS.LOGS);
++      return data ? JSON.parse(data) : [];
++    } catch (e) {
++       console.error("[DB] Log Read Error", e);
++       return [];
++    }
++  }
++
++  // --- Cache Storage ---
++  
++  readCache(): CacheEntry<any>[] {
++    try {
++      const data = this.getItem('simplydone_cache_v1');
++      return data ? JSON.parse(data) : [];
++    } catch (e) {
++      return [];
++    }
++  }
++
++  writeCache(entries: CacheEntry<any>[]): void {
++    try {
++      this.setItem('simplydone_cache_v1', JSON.stringify(entries));
++    } catch (e) {
++      console.error("[DB] Cache Write Error", e);
++    }
+   }
+ }
+ 
+diff --git a/src/server/services/taskService.ts b/src/server/services/taskService.ts
+index 16d21d4..ad770f9 100644
+--- a/src/server/services/taskService.ts
++++ b/src/server/services/taskService.ts
+@@ -4,8 +4,9 @@
+ // Path: src/server/services/taskService.ts
+ // ============================================================================
+ 
+-import { Task, CreateTaskDTO, UpdateTaskDTO, TaskStats, Priority, SystemLog } from '../../shared/types/task.types';
++import { Task, CreateTaskDTO, UpdateTaskDTO, TaskStats, Priority, SystemLog, FilterQuery, FilterLogic, FilterOperator, TaskTag, FilterCondition, FilterPreset } from '../../shared/types/task.types';
+ import { db } from '../db/jsonDatabase';
++import { cacheService } from './cacheService';
+ 
+ // Internal Logger Service
+ const Logger = {
+@@ -26,10 +27,21 @@ function log(level: 'INFO' | 'WARN' | 'ERROR', message: string, context?: any) {
+   if (level === 'ERROR') console.error(`[SERVER] ${message}`, context);
+ }
+ 
++// Memoization Helper Key
++const KEYS = {
++  ALL_TASKS: 'ALL_TASKS',
++  STATS: 'TASK_STATS'
++};
++
+ class TaskService {
+   
+   getAll(): Task[] {
+-    return db.readTasks();
++    const cached = cacheService.get<Task[]>(KEYS.ALL_TASKS);
++    if (cached) return cached;
++
++    const tasks = db.readTasks();
++    cacheService.set(KEYS.ALL_TASKS, tasks);
++    return tasks;
+   }
+ 
+   getById(id: string): Task | undefined {
+@@ -55,6 +67,9 @@ class TaskService {
+       description: dto.description?.trim(),
+       priority: dto.priority,
+       isCompleted: false,
++      subtasks: [],
++      tags: [],
++      reminders: [],
+       createdAt: Date.now(),
+       updatedAt: Date.now(),
+     };
+@@ -62,6 +77,10 @@ class TaskService {
+     tasks.push(newTask);
+     db.writeTasks(tasks);
+     Logger.info('Task created', { id: newTask.id });
++
++    // Invalidate Cache
++    cacheService.invalidate(KEYS.ALL_TASKS);
++    cacheService.invalidate(KEYS.STATS);
+     
+     return newTask;
+   }
+@@ -74,7 +93,6 @@ class TaskService {
+ 
+     const currentTask = tasks[index];
+     
+-    // Handle completion timestamp logic
+     let completedAt = currentTask.completedAt;
+     if (dto.isCompleted === true && !currentTask.isCompleted) {
+       completedAt = Date.now();
+@@ -92,10 +110,37 @@ class TaskService {
+     tasks[index] = updatedTask;
+     db.writeTasks(tasks);
+     Logger.info('Task updated', { id, updates: Object.keys(dto) });
++
++    cacheService.invalidate(KEYS.ALL_TASKS);
++    cacheService.invalidate(KEYS.STATS);
+     
+     return updatedTask;
+   }
+ 
++  toggleSubtask(taskId: string, subtaskId: string): Task | null {
++    const tasks = db.readTasks();
++    const taskIndex = tasks.findIndex(t => t.id === taskId);
++    
++    if (taskIndex === -1) return null;
++    
++    const task = tasks[taskIndex];
++    if (!task.subtasks) task.subtasks = []; 
++
++    const subtaskIndex = task.subtasks.findIndex(s => s.id === subtaskId);
++    if (subtaskIndex === -1) return null;
++
++    task.subtasks[subtaskIndex].isCompleted = !task.subtasks[subtaskIndex].isCompleted;
++    task.updatedAt = Date.now();
++
++    tasks[taskIndex] = task;
++    db.writeTasks(tasks);
++    Logger.info('Subtask toggled', { taskId, subtaskId });
++
++    cacheService.invalidate(KEYS.ALL_TASKS);
++
++    return task;
++  }
++
+   delete(id: string): boolean {
+     const tasks = db.readTasks();
+     const filtered = tasks.filter(t => t.id !== id);
+@@ -104,6 +149,10 @@ class TaskService {
+ 
+     db.writeTasks(filtered);
+     Logger.info('Task deleted', { id });
++
++    cacheService.invalidate(KEYS.ALL_TASKS);
++    cacheService.invalidate(KEYS.STATS);
++    
+     return true;
+   }
+ 
+@@ -115,23 +164,188 @@ class TaskService {
+     if (countRemoved > 0) {
+       db.writeTasks(activeTasks);
+       Logger.info('Cleared completed tasks', { count: countRemoved });
++      
++      cacheService.invalidate(KEYS.ALL_TASKS);
++      cacheService.invalidate(KEYS.STATS);
+     }
+     
+     return countRemoved;
+   }
+ 
++  // --- Tag Methods ---
++
++  getAllTags(): TaskTag[] {
++    return db.readTags();
++  }
++
++  createTag(name: string, color: string): TaskTag {
++    const tags = db.readTags();
++    const newTag: TaskTag = {
++      id: crypto.randomUUID(),
++      name,
++      color
++    };
++    tags.push(newTag);
++    db.writeTags(tags);
++    return newTag;
++  }
++
++  addTagToTask(taskId: string, tagId: string): Task | null {
++    const tasks = db.readTasks();
++    const tags = db.readTags();
++    const taskIndex = tasks.findIndex(t => t.id === taskId);
++    const tag = tags.find(t => t.id === tagId);
++
++    if (taskIndex === -1 || !tag) return null;
++
++    const task = tasks[taskIndex];
++    if (!task.tags) task.tags = [];
++    
++    if (!task.tags.some(t => t.id === tagId)) {
++      task.tags.push(tag);
++      task.updatedAt = Date.now();
++      tasks[taskIndex] = task;
++      db.writeTasks(tasks);
++      cacheService.invalidate(KEYS.ALL_TASKS);
++    }
++    return task;
++  }
++
++  removeTagFromTask(taskId: string, tagId: string): Task | null {
++    const tasks = db.readTasks();
++    const taskIndex = tasks.findIndex(t => t.id === taskId);
++    
++    if (taskIndex === -1) return null;
++
++    const task = tasks[taskIndex];
++    if (!task.tags) return task;
++
++    task.tags = task.tags.filter(t => t.id !== tagId);
++    task.updatedAt = Date.now();
++    
++    tasks[taskIndex] = task;
++    db.writeTasks(tasks);
++    cacheService.invalidate(KEYS.ALL_TASKS);
++    return task;
++  }
++
++  // --- Reminder Methods ---
++
++  addReminderToTask(taskId: string, time: number, message: string): Task | null {
++    const tasks = db.readTasks();
++    const taskIndex = tasks.findIndex(t => t.id === taskId);
++    
++    if (taskIndex === -1) return null;
++
++    const task = tasks[taskIndex];
++    if (!task.reminders) task.reminders = [];
++    
++    task.reminders.push({
++      id: crypto.randomUUID(),
++      time,
++      message
++    });
++    task.updatedAt = Date.now();
++
++    tasks[taskIndex] = task;
++    db.writeTasks(tasks);
++    cacheService.invalidate(KEYS.ALL_TASKS);
++    return task;
++  }
++
++  removeReminderFromTask(taskId: string, reminderId: string): Task | null {
++    const tasks = db.readTasks();
++    const taskIndex = tasks.findIndex(t => t.id === taskId);
++    
++    if (taskIndex === -1) return null;
++
++    const task = tasks[taskIndex];
++    if (!task.reminders) return task;
++
++    task.reminders = task.reminders.filter(r => r.id !== reminderId);
++    task.updatedAt = Date.now();
++
++    tasks[taskIndex] = task;
++    db.writeTasks(tasks);
++    cacheService.invalidate(KEYS.ALL_TASKS);
++    return task;
++  }
++
++  // --- Filter Logic ---
++
++  filterTasksByQuery(query: FilterQuery): Task[] {
++    const tasks = this.getAll();
++    if (!query.conditions || query.conditions.length === 0) return tasks;
++
++    return tasks.filter(task => {
++      const results = query.conditions.map(condition => {
++        const taskValue = task[condition.field];
++        if (taskValue === undefined) return false;
++
++        const targetValue = condition.value;
++        const sTaskVal = String(taskValue).toLowerCase();
++        const sTargetVal = String(targetValue).toLowerCase();
++
++        switch (condition.operator) {
++          case FilterOperator.EQUALS:
++            return sTaskVal === sTargetVal;
++          case FilterOperator.NOT_EQUALS:
++            return sTaskVal !== sTargetVal;
++          case FilterOperator.CONTAINS:
++            return sTaskVal.includes(sTargetVal);
++          case FilterOperator.STARTS_WITH:
++            return sTaskVal.startsWith(sTargetVal);
++          case FilterOperator.GREATER_THAN:
++             return Number(taskValue) > Number(targetValue);
++          case FilterOperator.LESS_THAN:
++             return Number(taskValue) < Number(targetValue);
++          default:
++            return false;
++        }
++      });
++
++      if (query.logic === FilterLogic.AND) {
++        return results.every(r => r === true);
++      } else {
++        return results.some(r => r === true);
++      }
++    });
++  }
++
++  getPresets(): FilterPreset[] {
++    return db.readPresets();
++  }
++
++  savePreset(name: string, query: FilterQuery): FilterPreset {
++    const presets = db.readPresets();
++    const newPreset: FilterPreset = {
++      id: crypto.randomUUID(),
++      name,
++      query
++    };
++    presets.push(newPreset);
++    db.writePresets(presets);
++    return newPreset;
++  }
++
+   getStats(): TaskStats {
++    const cached = cacheService.get<TaskStats>(KEYS.STATS);
++    if (cached) return cached;
++
+     const tasks = db.readTasks();
+     const total = tasks.length;
+     const completed = tasks.filter(t => t.isCompleted).length;
+     
+-    return {
++    const stats = {
+       total,
+       active: total - completed,
+       completed,
+       highPriority: tasks.filter(t => t.priority === Priority.HIGH && !t.isCompleted).length,
+       completionRate: total > 0 ? Math.round((completed / total) * 100) : 0
+     };
++
++    cacheService.set(KEYS.STATS, stats);
++    return stats;
+   }
+ }
+ 
+diff --git a/src/shared/constants.ts b/src/shared/constants.ts
+index 30fcd12..28a9aa6 100644
+--- a/src/shared/constants.ts
++++ b/src/shared/constants.ts
+@@ -11,6 +11,8 @@ export const APP_VERSION = "2.1.0";
+ export const DB_KEYS = {
+   TASKS: 'simplydone_tasks_v3',
+   LOGS: 'simplydone_logs_v3',
++  TAGS: 'simplydone_tags_v1',
++  PRESETS: 'simplydone_presets_v1'
+ };
+ 
+ // Validation Constraints
+diff --git a/src/shared/types/task.types.ts b/src/shared/types/task.types.ts
+index 00b22be..7116e07 100644
+--- a/src/shared/types/task.types.ts
++++ b/src/shared/types/task.types.ts
+@@ -23,6 +23,33 @@ export enum SortOption {
+   PRIORITY_ASC = 'PRIORITY_ASC',
+ }
+ 
++/**
++ * Subtask item structure.
++ */
++export interface SubTask {
++  id: string;
++  text: string;
++  isCompleted: boolean;
++}
++
++/**
++ * Tag structure.
++ */
++export interface TaskTag {
++  id: string;
++  name: string;
++  color: string;
++}
++
++/**
++ * Reminder structure.
++ */
++export interface TaskReminder {
++  id: string;
++  time: number;
++  message: string;
++}
++
+ /**
+  * The core Task object.
+  */
+@@ -32,6 +59,9 @@ export interface Task {
+   description?: string;
+   isCompleted: boolean;
+   priority: Priority;
++  subtasks: SubTask[];
++  tags: TaskTag[];
++  reminders: TaskReminder[];
+   createdAt: number;
+   updatedAt: number;
+   completedAt?: number;
+@@ -79,10 +109,13 @@ export interface UpdateTaskDTO {
+   isCompleted?: boolean;
+   priority?: Priority;
+   description?: string;
++  subtasks?: SubTask[];
++  tags?: TaskTag[];
++  reminders?: TaskReminder[];
+ }
+ 
+ /**
+- * Log entry for the backend logger.
++ * System Log entry structure used in server logs.
+  */
+ export interface SystemLog {
+   id: string;
+@@ -91,3 +124,58 @@ export interface SystemLog {
+   timestamp: number;
+   context?: any;
+ }
++
++/**
++ * Cache Entry Structure
++ */
++export interface CacheEntry<T> {
++  key: string;
++  value: T;
++  expiresAt: number;
++  createdAt: number;
++}
++
++/**
++ * Cache Configuration Structure
++ */
++export interface CacheConfig {
++  ttl: number; // Time to live in ms
++  maxSize: number; // Max items
++  enabled: boolean;
++}
++
++// --- Filtering Types ---
++
++export enum FilterLogic {
++  AND = 'AND',
++  OR = 'OR'
++}
++
++export enum FilterOperator {
++  EQUALS = 'EQUALS',
++  NOT_EQUALS = 'NOT_EQUALS',
++  CONTAINS = 'CONTAINS',
++  STARTS_WITH = 'STARTS_WITH',
++  GREATER_THAN = 'GREATER_THAN',
++  LESS_THAN = 'LESS_THAN'
++}
++
++export type TaskField = 'text' | 'description' | 'priority' | 'isCompleted';
++
++export interface FilterCondition {
++  id: string;
++  field: TaskField;
++  operator: FilterOperator;
++  value: string | boolean | number;
++}
++
++export interface FilterQuery {
++  logic: FilterLogic;
++  conditions: FilterCondition[];
++}
++
++export interface FilterPreset {
++  id: string;
++  name: string;
++  query: FilterQuery;
++}
