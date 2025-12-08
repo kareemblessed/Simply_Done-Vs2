@@ -1,0 +1,652 @@
+diff --git a/src/client/App.tsx b/src/client/App.tsx
+index bcdbba9..c4f7484 100644
+--- a/src/client/App.tsx
++++ b/src/client/App.tsx
+@@ -1,17 +1,17 @@
+ 
+ import React, { useEffect, useState, useMemo } from 'react';
+-import { Task, Priority, TaskStats, SortOption } from '../shared/types/task.types';
++import { Task, Priority, SortOption } from '../shared/types/task.types';
+ import { getPriorityWeight } from '../shared/utils/helpers';
+ import { apiService } from './services/apiService';
+ import { TaskForm } from './components/TaskForm';
+ import { FilterBar } from './components/FilterBar';
+ import { StatsCard } from './components/StatsCard';
+ import { TaskList } from './components/TaskList';
++import { TaskChange } from '../server/services/observerService';
+ 
+ const App: React.FC = () => {
+   // --- State ---
+   const [tasks, setTasks] = useState<Task[]>([]);
+-  const [stats, setStats] = useState<TaskStats | null>(null);
+   const [loading, setLoading] = useState(true);
+   const [error, setError] = useState<string | null>(null);
+   
+@@ -20,15 +20,11 @@ const App: React.FC = () => {
+   const [sort, setSort] = useState<SortOption>(SortOption.NEWEST);
+ 
+   // --- Actions ---
+-  const refreshData = async () => {
++  const fetchInitialData = async () => {
+     try {
+       setLoading(true);
+-      const [fetchedTasks, fetchedStats] = await Promise.all([
+-        apiService.fetchTasks(),
+-        apiService.getStats()
+-      ]);
++      const fetchedTasks = await apiService.fetchTasks();
+       setTasks(fetchedTasks);
+-      setStats(fetchedStats);
+       setError(null);
+     } catch (err: any) {
+       setError(err.message || 'Failed to load data');
+@@ -38,48 +34,66 @@ const App: React.FC = () => {
+   };
+ 
+   useEffect(() => {
+-    refreshData();
++    fetchInitialData();
++
++    // Subscribe to task changes via Observer
++    const unsubscribe = apiService.subscribe((change: TaskChange) => {
++      setTasks(currentTasks => {
++        switch (change.type) {
++          case 'CREATE':
++            return change.task ? [change.task, ...currentTasks] : currentTasks;
++          case 'UPDATE':
++            return change.task 
++              ? currentTasks.map(t => t.id === change.task!.id ? change.task! : t)
++              : currentTasks;
++          case 'DELETE':
++            return change.taskId 
++              ? currentTasks.filter(t => t.id !== change.taskId)
++              : currentTasks;
++          default:
++            return currentTasks;
++        }
++      });
++    });
++
++    return () => unsubscribe();
+   }, []);
+ 
+-  const updateStats = async () => {
++  const handleAddTask = async (text: string, priority: Priority, desc?: string) => {
+     try {
+-      const newStats = await apiService.getStats();
+-      setStats(newStats);
+-    } catch (e) { console.error(e); }
++      await apiService.createTask(text, priority, desc);
++    } catch (err: any) { alert(err.message); }
+   };
+ 
+-  const handleAddTask = async (text: string, priority: Priority, desc?: string) => {
++  const handleEditTask = async (id: string, updates: Partial<Task>) => {
+     try {
+-      const newTask = await apiService.createTask(text, priority, desc);
+-      setTasks(prev => [newTask, ...prev]);
+-      await updateStats();
++      await apiService.updateTask(id, updates);
+     } catch (err: any) { alert(err.message); }
+   };
+ 
+   const handleToggleTask = async (id: string, currentStatus: boolean) => {
+-    setTasks(prev => prev.map(t => t.id === id ? { ...t, isCompleted: !currentStatus } : t));
+     try {
+       await apiService.toggleTask(id, currentStatus);
+-      await updateStats();
+-    } catch (err: any) { refreshData(); alert(err.message); }
++    } catch (err: any) { alert(err.message); }
++  };
++
++  const handleToggleSubtask = async (taskId: string, subtaskId: string) => {
++     try {
++       await apiService.toggleSubtask(taskId, subtaskId);
++     } catch (err: any) { alert(err.message); }
+   };
+ 
+   const handleDeleteTask = async (id: string) => {
+     if (!confirm('Delete this task?')) return;
+-    const old = [...tasks];
+-    setTasks(prev => prev.filter(t => t.id !== id));
+     try {
+       await apiService.deleteTask(id);
+-      await updateStats();
+-    } catch (err: any) { setTasks(old); alert(err.message); }
++    } catch (err: any) { alert(err.message); }
+   };
+ 
+   const handleClearCompleted = async () => {
+     if (!confirm('Clear all completed tasks?')) return;
+     try {
+       await apiService.clearCompleted();
+-      setTasks(prev => prev.filter(t => !t.isCompleted));
+-      await updateStats();
+     } catch (err: any) { alert(err.message); }
+   };
+ 
+@@ -115,8 +129,8 @@ const App: React.FC = () => {
+           </p>
+         </div>
+ 
+-        {/* Stats */}
+-        {!loading && !error && <StatsCard stats={stats} />}
++        {/* Stats - Self Managed via Observer */}
++        <StatsCard />
+ 
+         {/* Form */}
+         <TaskForm onAdd={handleAddTask} />
+@@ -129,13 +143,12 @@ const App: React.FC = () => {
+             onFilterChange={setFilter}
+             onSortChange={setSort}
+             onClearCompleted={handleClearCompleted}
+-            hasCompleted={tasks.some(t => t.isCompleted)}
+           />
+ 
+           {error && (
+             <div className="mb-6 p-4 bg-red-50 text-red-700 rounded-2xl border border-red-100 flex items-center gap-3">
+               <span className="font-bold">Error:</span> {error}
+-              <button onClick={refreshData} className="ml-auto underline hover:text-red-900 font-medium">Retry</button>
++              <button onClick={fetchInitialData} className="ml-auto underline hover:text-red-900 font-medium">Retry</button>
+             </div>
+           )}
+ 
+@@ -143,7 +156,9 @@ const App: React.FC = () => {
+             tasks={processedTasks}
+             loading={loading}
+             onToggle={handleToggleTask}
++            onToggleSubtask={handleToggleSubtask}
+             onDelete={handleDeleteTask}
++            onEdit={handleEditTask}
+             emptyMessage={
+               filter === 'ALL' ? "Your list is empty. Add a task above to get started!" 
+               : filter === 'ACTIVE' ? "You're all caught up! Great job." 
+@@ -154,7 +169,7 @@ const App: React.FC = () => {
+ 
+         <div className="mt-12 text-center opacity-60">
+            <p className="text-[10px] text-slate-500 font-bold tracking-[0.2em] uppercase">
+-             v2.1 • LocalStorage Database • Secure
++             v2.2 • LocalStorage Database • Secure
+            </p>
+         </div>
+       </div>
+diff --git a/src/client/components/FilterBar.tsx b/src/client/components/FilterBar.tsx
+index 8f938bc..a0d2b9e 100644
+--- a/src/client/components/FilterBar.tsx
++++ b/src/client/components/FilterBar.tsx
+@@ -1,6 +1,7 @@
+ 
+-import React from 'react';
++import React, { useEffect, useState } from 'react';
+ import { SortOption } from '../../shared/types/task.types';
++import { apiService } from '../services/apiService';
+ 
+ interface FilterBarProps {
+   currentFilter: 'ALL' | 'ACTIVE' | 'COMPLETED';
+@@ -8,7 +9,6 @@ interface FilterBarProps {
+   onFilterChange: (f: 'ALL' | 'ACTIVE' | 'COMPLETED') => void;
+   onSortChange: (s: SortOption) => void;
+   onClearCompleted: () => void;
+-  hasCompleted: boolean;
+ }
+ 
+ export const FilterBar: React.FC<FilterBarProps> = ({ 
+@@ -17,8 +17,25 @@ export const FilterBar: React.FC<FilterBarProps> = ({
+   onFilterChange, 
+   onSortChange,
+   onClearCompleted,
+-  hasCompleted
+ }) => {
++  const [hasCompleted, setHasCompleted] = useState(false);
++
++  const checkCompletionStatus = async () => {
++    try {
++      const stats = await apiService.getStats();
++      setHasCompleted(stats.completed > 0);
++    } catch (e) { console.error(e); }
++  };
++
++  useEffect(() => {
++    checkCompletionStatus();
++    // Subscribe to update button visibility
++    const unsubscribe = apiService.subscribe(() => {
++      checkCompletionStatus();
++    });
++    return () => unsubscribe();
++  }, []);
++
+   return (
+     <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6 pb-6 border-b border-slate-100">
+       <div className="flex bg-slate-100/80 p-1 rounded-xl backdrop-blur-sm">
+diff --git a/src/client/components/StatsCard.tsx b/src/client/components/StatsCard.tsx
+index 2b022e2..ac9411d 100644
+--- a/src/client/components/StatsCard.tsx
++++ b/src/client/components/StatsCard.tsx
+@@ -1,10 +1,7 @@
+ 
+-import React from 'react';
++import React, { useEffect, useState } from 'react';
+ import { TaskStats } from '../../shared/types/task.types';
+-
+-interface StatsCardProps {
+-  stats: TaskStats | null;
+-}
++import { apiService } from '../services/apiService';
+ 
+ const StatItem = ({ label, value, colorClass }: { label: string, value: string | number, colorClass: string }) => (
+   <div className="bg-white/80 backdrop-blur-sm p-4 rounded-2xl shadow-sm border border-white/50 transform hover:scale-105 transition-all duration-300">
+@@ -13,7 +10,31 @@ const StatItem = ({ label, value, colorClass }: { label: string, value: string |
+   </div>
+ );
+ 
+-export const StatsCard: React.FC<StatsCardProps> = ({ stats }) => {
++export const StatsCard: React.FC = () => {
++  const [stats, setStats] = useState<TaskStats | null>(null);
++
++  const fetchStats = async () => {
++    try {
++      const data = await apiService.getStats();
++      setStats(data);
++    } catch (e) {
++      console.error(e);
++    }
++  };
++
++  useEffect(() => {
++    // Initial fetch
++    fetchStats();
++
++    // Subscribe to observer for updates
++    // We update stats on ANY change
++    const unsubscribe = apiService.subscribe(() => {
++      fetchStats();
++    });
++
++    return () => unsubscribe();
++  }, []);
++
+   if (!stats) return null;
+ 
+   return (
+diff --git a/src/client/services/apiService.ts b/src/client/services/apiService.ts
+index c53d3aa..f398757 100644
+--- a/src/client/services/apiService.ts
++++ b/src/client/services/apiService.ts
+@@ -6,12 +6,18 @@
+ 
+ import { Task, CreateTaskDTO, UpdateTaskDTO, TaskStats, Priority } from '../../shared/types/task.types';
+ import { TaskController } from '../../server/index';
++import { observerService, TaskChange } from '../../server/services/observerService';
+ 
+ /**
+  * Handles communication between Frontend components and the Backend Controller.
+  */
+ export const apiService = {
+   
++  // New subscription method for Observer Pattern
++  subscribe(callback: (change: TaskChange) => void): () => void {
++    return observerService.subscribe({ update: callback });
++  },
++
+   async fetchTasks(): Promise<Task[]> {
+     const response = await TaskController.getTasks();
+     if (!response.success || !response.data) throw new Error(response.error);
+@@ -25,6 +31,12 @@ export const apiService = {
+     return response.data;
+   },
+ 
++  async updateTask(id: string, updates: UpdateTaskDTO): Promise<Task> {
++    const response = await TaskController.updateTask(id, updates);
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
+   async toggleTask(id: string, currentStatus: boolean): Promise<Task> {
+     const payload: UpdateTaskDTO = { isCompleted: !currentStatus };
+     const response = await TaskController.updateTask(id, payload);
+@@ -32,6 +44,12 @@ export const apiService = {
+     return response.data;
+   },
+ 
++  async toggleSubtask(taskId: string, subtaskId: string): Promise<Task> {
++    const response = await TaskController.toggleSubtask(taskId, subtaskId);
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
+   async deleteTask(id: string): Promise<void> {
+     const response = await TaskController.deleteTask(id);
+     if (!response.success) throw new Error(response.error);
+diff --git a/src/server/controllers/taskController.ts b/src/server/controllers/taskController.ts
+index 4028278..fa4956d 100644
+--- a/src/server/controllers/taskController.ts
++++ b/src/server/controllers/taskController.ts
+@@ -63,6 +63,17 @@ export const TaskController = {
+     }
+   },
+ 
++  async toggleSubtask(taskId: string, subtaskId: string): Promise<ApiResponse<Task>> {
++    await delay(150);
++    try {
++      const task = taskService.toggleSubtask(taskId, subtaskId);
++      if (!task) return this._response(false, undefined, 'Task or subtask not found', 404);
++      return this._response(true, task);
++    } catch (e) {
++      return this._response(false, undefined, 'Subtask toggle failed', 500);
++    }
++  },
++
+   async deleteTask(id: string): Promise<ApiResponse<null>> {
+     await delay(200);
+     try {
+diff --git a/src/server/db/jsonDatabase.ts b/src/server/db/jsonDatabase.ts
+index 991a1a6..80b0653 100644
+--- a/src/server/db/jsonDatabase.ts
++++ b/src/server/db/jsonDatabase.ts
+@@ -8,10 +8,46 @@ import { Task, SystemLog } from '../../shared/types/task.types';
+ import { DB_KEYS } from '../../shared/constants';
+ 
+ class JsonDatabase {
++  // In-memory fallback for environments without localStorage (like Node.js tests)
++  private memoryStorage: Record<string, string> = {};
++
++  // Check if we are running in a browser environment with available localStorage
++  private get isBrowser(): boolean {
++    return (
++      typeof window !== 'undefined' && 
++      typeof window.localStorage !== 'undefined'
++    );
++  }
++
++  private getItem(key: string): string | null {
++    if (this.isBrowser) {
++      try {
++        // Explicitly use window.localStorage to avoid ReferenceError in some envs
++        return window.localStorage.getItem(key);
++      } catch (e) {
++        console.warn('LocalStorage access failed:', e);
++        return null;
++      }
++    }
++    return this.memoryStorage[key] || null;
++  }
++
++  private setItem(key: string, value: string): void {
++    if (this.isBrowser) {
++      try {
++        window.localStorage.setItem(key, value);
++        return;
++      } catch (e) {
++        console.warn('LocalStorage write failed:', e);
++        // Fallback to memory if localStorage fails (e.g. quota exceeded)
++      }
++    }
++    this.memoryStorage[key] = value;
++  }
+   
+   readTasks(): Task[] {
+     try {
+-      const data = localStorage.getItem(DB_KEYS.TASKS);
++      const data = this.getItem(DB_KEYS.TASKS);
+       return data ? JSON.parse(data) : [];
+     } catch (e) {
+       console.error("[DB] Read Error", e);
+@@ -21,7 +57,7 @@ class JsonDatabase {
+ 
+   writeTasks(tasks: Task[]): void {
+     try {
+-      localStorage.setItem(DB_KEYS.TASKS, JSON.stringify(tasks));
++      this.setItem(DB_KEYS.TASKS, JSON.stringify(tasks));
+     } catch (e) {
+       console.error("[DB] Write Error", e);
+     }
+@@ -33,15 +69,20 @@ class JsonDatabase {
+       logs.push(log);
+       // Limit logs to prevent localStorage quotas
+       if (logs.length > 200) logs.shift();
+-      localStorage.setItem(DB_KEYS.LOGS, JSON.stringify(logs));
++      this.setItem(DB_KEYS.LOGS, JSON.stringify(logs));
+     } catch (e) {
+       console.error("[DB] Log Error", e);
+     }
+   }
+ 
+   readLogs(): SystemLog[] {
+-    const data = localStorage.getItem(DB_KEYS.LOGS);
+-    return data ? JSON.parse(data) : [];
++    try {
++      const data = this.getItem(DB_KEYS.LOGS);
++      return data ? JSON.parse(data) : [];
++    } catch (e) {
++       console.error("[DB] Log Read Error", e);
++       return [];
++    }
+   }
+ }
+ 
+diff --git a/src/server/services/taskService.ts b/src/server/services/taskService.ts
+index 16d21d4..c72637a 100644
+--- a/src/server/services/taskService.ts
++++ b/src/server/services/taskService.ts
+@@ -6,6 +6,7 @@
+ 
+ import { Task, CreateTaskDTO, UpdateTaskDTO, TaskStats, Priority, SystemLog } from '../../shared/types/task.types';
+ import { db } from '../db/jsonDatabase';
++import { observerService } from './observerService';
+ 
+ // Internal Logger Service
+ const Logger = {
+@@ -29,11 +30,20 @@ function log(level: 'INFO' | 'WARN' | 'ERROR', message: string, context?: any) {
+ class TaskService {
+   
+   getAll(): Task[] {
+-    return db.readTasks();
++    const tasks = db.readTasks();
++    // Ensure data integrity for older records
++    return tasks.map(t => ({
++      ...t,
++      subtasks: Array.isArray(t.subtasks) ? t.subtasks : []
++    }));
+   }
+ 
+   getById(id: string): Task | undefined {
+-    return db.readTasks().find(t => t.id === id);
++    const task = db.readTasks().find(t => t.id === id);
++    if (task && !Array.isArray(task.subtasks)) {
++      task.subtasks = [];
++    }
++    return task;
+   }
+ 
+   create(dto: CreateTaskDTO): Task {
+@@ -55,6 +65,7 @@ class TaskService {
+       description: dto.description?.trim(),
+       priority: dto.priority,
+       isCompleted: false,
++      subtasks: [], // Initialize empty subtasks
+       createdAt: Date.now(),
+       updatedAt: Date.now(),
+     };
+@@ -63,6 +74,11 @@ class TaskService {
+     db.writeTasks(tasks);
+     Logger.info('Task created', { id: newTask.id });
+     
++    observerService.notify({ 
++      type: 'CREATE', 
++      task: newTask 
++    });
++
+     return newTask;
+   }
+ 
+@@ -85,6 +101,7 @@ class TaskService {
+     const updatedTask: Task = {
+       ...currentTask,
+       ...dto,
++      subtasks: dto.subtasks || currentTask.subtasks || [],
+       updatedAt: Date.now(),
+       completedAt
+     };
+@@ -92,10 +109,47 @@ class TaskService {
+     tasks[index] = updatedTask;
+     db.writeTasks(tasks);
+     Logger.info('Task updated', { id, updates: Object.keys(dto) });
++
++    observerService.notify({ 
++      type: 'UPDATE', 
++      taskId: id,
++      task: updatedTask,
++      delta: dto
++    });
+     
+     return updatedTask;
+   }
+ 
++  toggleSubtask(taskId: string, subtaskId: string): Task | null {
++    const tasks = db.readTasks();
++    const taskIndex = tasks.findIndex(t => t.id === taskId);
++    
++    if (taskIndex === -1) return null;
++    
++    const task = tasks[taskIndex];
++    if (!Array.isArray(task.subtasks)) task.subtasks = []; 
++
++    const subtaskIndex = task.subtasks.findIndex(s => s.id === subtaskId);
++    if (subtaskIndex === -1) return null;
++
++    // Toggle status
++    task.subtasks[subtaskIndex].isCompleted = !task.subtasks[subtaskIndex].isCompleted;
++    task.updatedAt = Date.now();
++
++    tasks[taskIndex] = task;
++    db.writeTasks(tasks);
++    Logger.info('Subtask toggled', { taskId, subtaskId });
++
++    observerService.notify({ 
++      type: 'UPDATE', 
++      taskId: taskId,
++      task: task,
++      delta: { subtasks: task.subtasks }
++    });
++
++    return task;
++  }
++
+   delete(id: string): boolean {
+     const tasks = db.readTasks();
+     const filtered = tasks.filter(t => t.id !== id);
+@@ -104,6 +158,12 @@ class TaskService {
+ 
+     db.writeTasks(filtered);
+     Logger.info('Task deleted', { id });
++
++    observerService.notify({ 
++      type: 'DELETE', 
++      taskId: id 
++    });
++
+     return true;
+   }
+ 
+@@ -115,6 +175,11 @@ class TaskService {
+     if (countRemoved > 0) {
+       db.writeTasks(activeTasks);
+       Logger.info('Cleared completed tasks', { count: countRemoved });
++      
++      const completedIds = tasks.filter(t => t.isCompleted).map(t => t.id);
++      completedIds.forEach(id => {
++        observerService.notify({ type: 'DELETE', taskId: id });
++      });
+     }
+     
+     return countRemoved;
+diff --git a/src/server/validators/taskValidator.ts b/src/server/validators/taskValidator.ts
+index fa39b18..4720b21 100644
+--- a/src/server/validators/taskValidator.ts
++++ b/src/server/validators/taskValidator.ts
+@@ -10,25 +10,35 @@ import { VALIDATION } from '../../shared/constants';
+ export const TaskValidator = {
+   
+   /**
+-   * Validates the payload for creating a new task
++   * Returns a keyed object of validation errors for form feedback
+    */
+-  validateCreate(dto: CreateTaskDTO): string | null {
++  getCreateErrors(dto: CreateTaskDTO): Record<string, string> {
++    const errors: Record<string, string> = {};
++
+     if (!dto.text || dto.text.trim().length === 0) {
+-      return 'Task text is required';
+-    }
+-    
+-    if (dto.text.length > VALIDATION.MAX_TITLE_LENGTH) {
+-      return `Task text cannot exceed ${VALIDATION.MAX_TITLE_LENGTH} characters`;
++      errors.text = 'Task text is required';
++    } else if (dto.text.length > VALIDATION.MAX_TITLE_LENGTH) {
++      errors.text = `Task text cannot exceed ${VALIDATION.MAX_TITLE_LENGTH} characters`;
+     }
+     
+     if (dto.description && dto.description.length > VALIDATION.MAX_DESC_LENGTH) {
+-      return `Description cannot exceed ${VALIDATION.MAX_DESC_LENGTH} characters`;
++      errors.description = `Description cannot exceed ${VALIDATION.MAX_DESC_LENGTH} characters`;
+     }
+     
+     if (!Object.values(Priority).includes(dto.priority)) {
+-      return 'Invalid priority level provided';
++      errors.priority = 'Invalid priority level provided';
+     }
+     
++    return errors;
++  },
++
++  /**
++   * Validates the payload for creating a new task
++   */
++  validateCreate(dto: CreateTaskDTO): string | null {
++    const errors = this.getCreateErrors(dto);
++    const keys = Object.keys(errors);
++    if (keys.length > 0) return errors[keys[0]];
+     return null;
+   },
+ 
+diff --git a/src/shared/types/task.types.ts b/src/shared/types/task.types.ts
+index 00b22be..ff11db8 100644
+--- a/src/shared/types/task.types.ts
++++ b/src/shared/types/task.types.ts
+@@ -23,6 +23,15 @@ export enum SortOption {
+   PRIORITY_ASC = 'PRIORITY_ASC',
+ }
+ 
++/**
++ * Subtask item structure.
++ */
++export interface SubTask {
++  id: string;
++  text: string;
++  isCompleted: boolean;
++}
++
+ /**
+  * The core Task object.
+  */
+@@ -32,6 +41,7 @@ export interface Task {
+   description?: string;
+   isCompleted: boolean;
+   priority: Priority;
++  subtasks: SubTask[];
+   createdAt: number;
+   updatedAt: number;
+   completedAt?: number;
+@@ -79,10 +89,11 @@ export interface UpdateTaskDTO {
+   isCompleted?: boolean;
+   priority?: Priority;
+   description?: string;
++  subtasks?: SubTask[];
+ }
+ 
+ /**
+- * Log entry for the backend logger.
++ * System Log entry structure used in server logs.
+  */
+ export interface SystemLog {
+   id: string;
