@@ -1,25 +1,31 @@
-task_description:
+task_description: 
 task-002
+
 Add due date functionality to tasks allowing users to set and track task deadlines with visual indicators.
 
 requirements:
-- Add dueDate field to Task type as optional Date or string
-- Update TaskForm to include date picker input for due date
-- Modify taskService.create to accept and store dueDate
-- Add taskService.updateDueDate method that takes taskId and new date
-- Expose updateDueDate in TaskController
-- Add updateDueDate to apiService
-- Display due date in TaskItem component with formatting
-- Add visual indicator for overdue tasks
-- Show days remaining for upcoming tasks
+
+-Add dueDate field to Task type as optional
+-Update TaskForm to include date picker input
+-Modify taskService.create to accept dueDate
+-Add taskService.updateDueDate method
+-Expose updateDueDate in TaskController
+-Add updateDueDate to apiService
+-Display due date in TaskItem component
+-Add visual indicator for overdue tasks
+-Show days remaining for upcoming tasks
 
 Success_criteria:
-- All 6 tests pass
-- New tasks can be created with or without due dates
-- Tasks without due dates display properly
-- Due dates display in readable format (e.g. "Due: Dec 5, 2025")
-- Overdue tasks show visual warning
-- Due date can be updated after task creation
+
+-All 9 tests pass
+-Tasks set with or without a due date
+-Tasks with no due date have the proper appearance
+-Due dates are shown in a readable format
+-Overdue tasks have a visual warning
+-Ability to change due dates after being created
+-Days remaining calculated correctly
+-The invalid dates are handled in a graceful manner
+-Formatting of dates is done uniformly across the app
 
 author_name: kareemblessed
 author_email: blessedronan@gmail.com
