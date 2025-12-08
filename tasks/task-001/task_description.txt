@@ -1,6 +1,6 @@
 task_description:
 task-001
-Add subtask management feature to allow users to create and track subtasks within main tasks. Implement SubTask type, add subtasks array to Task interface, create toggleSubtask method in taskService and taskController, update apiService, and display subtask UI in TaskItem component with progress indicator.
+Add subtask management feature to allow users to create and track subtasks within main tasks.Implement SubTask type, add subtasks array to Task interface, create toggleSubtask method in taskService and taskController, update apiService, and display subtask UI in TaskItem component with progress indicator.
 
 requirements:
 - Design SubTask table with id, text and isCompleted attributes.
@@ -15,9 +15,9 @@ requirements:
 
 Success_criteria:
 - All 6 tests pass
-- New tasks have empty subtasks array
-- Existing tasks load without errors
-- Clicking subtask toggles its status
+- New tasks have array of empty subtasks.
+- There are no errors on loading existing tasks.
+- The status of subtask is toggled by clicking.
 - Progress updates correctly
 
 author_name: kareemblessed
