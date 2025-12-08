@@ -1,6 +1,8 @@
 
-task_description: task-009
+task_description: 
+task-009
 Implement observer pattern in taskService where App.tsx, FilterBar, and StatsCard subscribe to selective task changes and mutations.
+
 requirements:
 
 Create TaskObserver interface with update method
@@ -12,13 +14,16 @@ Update StatsCard to subscribe to completion
 
 Success_criteria:
 
-All 6 tests pass
+All 9 tests should pass
 Observers subscribe to taskService correctly
 Create operation notifies all observers
-Update operation notifies relevant observers
-Delete operation notifies all observers
+The Update operation notifies relevant observers
+The Delete operation should notify all observers
 Selective updates prevent unnecessary rerenders
-Multiple observers receive notifications simultaneously
+Several observers are notified at the same time
+Change delta is contained in observer notifications
+There are no circular subscription loops
+You must create a new file src/server/services/observerService.ts for the task solution
 
 author_name: kareemblessed
 author_email: blessedronan@gmail.com
