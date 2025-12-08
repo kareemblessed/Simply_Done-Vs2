@@ -1,0 +1,1400 @@
+diff --git a/src/client/App.tsx b/src/client/App.tsx
+index bcdbba9..f7678e5 100644
+--- a/src/client/App.tsx
++++ b/src/client/App.tsx
+@@ -1,16 +1,102 @@
+-
+ import React, { useEffect, useState, useMemo } from 'react';
+-import { Task, Priority, TaskStats, SortOption } from '../shared/types/task.types';
++import { Task, Priority, TaskStats, SortOption, FilterQuery, FilterLogic, FilterCondition, FilterOperator, TaskField, FilterPreset } from '../shared/types/task.types';
+ import { getPriorityWeight } from '../shared/utils/helpers';
+ import { apiService } from './services/apiService';
++import { useOptimisticUpdate } from '../hooks/useOptimisticUpdate';
+ import { TaskForm } from './components/TaskForm';
+ import { FilterBar } from './components/FilterBar';
+ import { StatsCard } from './components/StatsCard';
+ import { TaskList } from './components/TaskList';
+ 
++// --- Inlined Filter Component ---
++interface InlinedFilterComposerProps {
++  onSearch: (query: FilterQuery) => void;
++  onClear: () => void;
++}
++
++const InlinedFilterComposer: React.FC<InlinedFilterComposerProps> = ({ onSearch, onClear }) => {
++  const [conditions, setConditions] = useState<FilterCondition[]>([]);
++  const [logic, setLogic] = useState<FilterLogic>(FilterLogic.AND);
++  const [presets, setPresets] = useState<FilterPreset[]>([]);
++  const [presetName, setPresetName] = useState('');
++
++  useEffect(() => {
++    apiService.getFilterPresets().then(setPresets).catch(console.error);
++  }, []);
++
++  const addCondition = () => {
++    setConditions([...conditions, { id: crypto.randomUUID(), field: 'text', operator: FilterOperator.CONTAINS, value: '' }]);
++  };
++
++  const updateCondition = (id: string, u: Partial<FilterCondition>) => {
++    setConditions(conditions.map(c => c.id === id ? { ...c, ...u } : c));
++  };
++
++  const handleSearch = () => {
++    onSearch({ logic, conditions });
++  };
++
++  const handleSave = async () => {
++    if (!presetName) return;
++    try {
++      await apiService.saveFilterPreset(presetName, { logic, conditions });
++      setPresetName('');
++      apiService.getFilterPresets().then(setPresets);
++    } catch(e) { alert("Save failed"); }
++  };
++
++  return (
++    <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 mb-6">
++       <div className="flex gap-4 mb-4 items-center">
++         <span className="text-xs font-bold text-slate-500">Match:</span>
++         <div className="flex bg-white rounded-lg p-1 border">
++           {[FilterLogic.AND, FilterLogic.OR].map(l => (
++             <button key={l} onClick={() => setLogic(l)} className={`px-3 py-1 text-xs font-bold rounded ${logic === l ? 'bg-indigo-100 text-indigo-700' : 'text-slate-500'}`}>{l}</button>
++           ))}
++         </div>
++       </div>
++       <div className="space-y-2 mb-4">
++         {conditions.map(c => (
++           <div key={c.id} className="flex gap-2 items-center bg-white p-2 rounded border">
++             <select className="text-xs bg-transparent" value={c.field} onChange={e => updateCondition(c.id, { field: e.target.value as TaskField })}>
++               <option value="text">Name</option>
++               <option value="priority">Priority</option>
++               <option value="isCompleted">Status</option>
++             </select>
++             <select className="text-xs bg-transparent" value={c.operator} onChange={e => updateCondition(c.id, { operator: e.target.value as FilterOperator })}>
++               <option value={FilterOperator.EQUALS}>Equals</option>
++               <option value={FilterOperator.CONTAINS}>Contains</option>
++             </select>
++             <input className="text-xs border rounded p-1 flex-1" value={String(c.value)} onChange={e => updateCondition(c.id, { value: e.target.value })} />
++             <button onClick={() => setConditions(conditions.filter(x => x.id !== c.id))} className="text-red-500">x</button>
++           </div>
++         ))}
++         <button onClick={addCondition} className="text-xs text-indigo-600 font-bold">+ Add Condition</button>
++       </div>
++       <div className="flex justify-between border-t pt-4">
++         <div className="flex gap-2">
++           <select className="text-xs border rounded" onChange={(e) => {
++             const p = presets.find(x => x.id === e.target.value);
++             if(p) { setLogic(p.query.logic); setConditions(p.query.conditions); }
++           }}>
++             <option value="">Load Preset...</option>
++             {presets.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
++           </select>
++           <input placeholder="Name" className="text-xs border rounded w-20 px-1" value={presetName} onChange={e => setPresetName(e.target.value)} />
++           <button onClick={handleSave} className="text-xs bg-slate-200 px-2 rounded">Save</button>
++         </div>
++         <div className="flex gap-2">
++           <button onClick={onClear} className="text-xs text-slate-500 font-bold px-3 py-1">Clear</button>
++           <button onClick={handleSearch} className="text-xs bg-indigo-600 text-white font-bold px-4 py-1 rounded-lg">Apply</button>
++         </div>
++       </div>
++    </div>
++  );
++};
++
+ const App: React.FC = () => {
+-  // --- State ---
+-  const [tasks, setTasks] = useState<Task[]>([]);
++  // --- State with Optimistic UI ---
++  const { tasks, setServerTasks, addOptimistic, removeOptimistic, isPending } = useOptimisticUpdate([]);
+   const [stats, setStats] = useState<TaskStats | null>(null);
+   const [loading, setLoading] = useState(true);
+   const [error, setError] = useState<string | null>(null);
+@@ -18,6 +104,11 @@ const App: React.FC = () => {
+   // UI State
+   const [filter, setFilter] = useState<'ALL' | 'ACTIVE' | 'COMPLETED'>('ALL');
+   const [sort, setSort] = useState<SortOption>(SortOption.NEWEST);
++  
++  // Search State
++  const [isSearching, setIsSearching] = useState(false);
++  const [searchResults, setSearchResults] = useState<Task[]>([]);
++  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
+ 
+   // --- Actions ---
+   const refreshData = async () => {
+@@ -27,7 +118,7 @@ const App: React.FC = () => {
+         apiService.fetchTasks(),
+         apiService.getStats()
+       ]);
+-      setTasks(fetchedTasks);
++      setServerTasks(fetchedTasks);
+       setStats(fetchedStats);
+       setError(null);
+     } catch (err: any) {
+@@ -49,45 +140,148 @@ const App: React.FC = () => {
+   };
+ 
+   const handleAddTask = async (text: string, priority: Priority, desc?: string) => {
++    // Optimistic Create
++    const tempId = crypto.randomUUID();
++    const tempTask: Task = {
++        id: tempId,
++        text,
++        priority,
++        description: desc,
++        isCompleted: false,
++        subtasks: [],
++        tags: [],
++        reminders: [],
++        createdAt: Date.now(),
++        updatedAt: Date.now()
++    };
++    const opId = addOptimistic(tempId, 'CREATE', tempTask);
++
+     try {
+       const newTask = await apiService.createTask(text, priority, desc);
+-      setTasks(prev => [newTask, ...prev]);
++      setServerTasks(prev => [newTask, ...prev]);
++      removeOptimistic(opId);
+       await updateStats();
+-    } catch (err: any) { alert(err.message); }
++    } catch (err: any) { 
++        removeOptimistic(opId); // Rollback
++        alert('Failed to create task: ' + err.message); 
++    }
++  };
++
++  const handleEditTask = async (id: string, updates: Partial<Task>) => {
++    const opId = addOptimistic(id, 'UPDATE', updates);
++    
++    try {
++      const updated = await apiService.updateTask(id, updates);
++      setServerTasks(prev => prev.map(t => t.id === id ? updated : t));
++      removeOptimistic(opId);
++      await updateStats();
++    } catch (err: any) {
++      removeOptimistic(opId); // Rollback
++      alert('Failed to update task: ' + err.message);
++    }
+   };
+ 
+   const handleToggleTask = async (id: string, currentStatus: boolean) => {
+-    setTasks(prev => prev.map(t => t.id === id ? { ...t, isCompleted: !currentStatus } : t));
++    const opId = addOptimistic(id, 'UPDATE', { isCompleted: !currentStatus });
++
+     try {
+-      await apiService.toggleTask(id, currentStatus);
++      const updated = await apiService.toggleTask(id, currentStatus);
++      setServerTasks(prev => prev.map(t => t.id === id ? updated : t));
++      removeOptimistic(opId);
+       await updateStats();
+-    } catch (err: any) { refreshData(); alert(err.message); }
++    } catch (err: any) { 
++      removeOptimistic(opId); // Rollback
++      alert('Failed to toggle task: ' + err.message); 
++    }
++  };
++
++  const handleToggleSubtask = async (taskId: string, subtaskId: string) => {
++     // For subtasks, optimistic update logic is complex if we don't have the full object.
++     // We find the current task to get current subtasks
++     const task = tasks.find(t => t.id === taskId);
++     if (!task) return;
++
++     const subtasks = task.subtasks.map(s => s.id === subtaskId ? { ...s, isCompleted: !s.isCompleted } : s);
++     const opId = addOptimistic(taskId, 'UPDATE', { subtasks });
++
++     try {
++       const updated = await apiService.toggleSubtask(taskId, subtaskId);
++       setServerTasks(prev => prev.map(t => t.id === taskId ? updated : t));
++       removeOptimistic(opId);
++     } catch (err: any) { 
++        removeOptimistic(opId);
++        alert('Failed to toggle subtask: ' + err.message); 
++     }
+   };
+ 
+   const handleDeleteTask = async (id: string) => {
+     if (!confirm('Delete this task?')) return;
+-    const old = [...tasks];
+-    setTasks(prev => prev.filter(t => t.id !== id));
++    
++    const opId = addOptimistic(id, 'DELETE', {});
++
+     try {
+       await apiService.deleteTask(id);
++      setServerTasks(prev => prev.filter(t => t.id !== id));
++      removeOptimistic(opId);
+       await updateStats();
+-    } catch (err: any) { setTasks(old); alert(err.message); }
++    } catch (err: any) { 
++      removeOptimistic(opId); // Rollback
++      alert('Failed to delete task: ' + err.message); 
++    }
+   };
+ 
+   const handleClearCompleted = async () => {
+     if (!confirm('Clear all completed tasks?')) return;
++    
++    // For bulk operations, optimistic updates can be tricky. 
++    // We will apply optimistic deletes to all completed tasks visible.
++    const completedIds = tasks.filter(t => t.isCompleted).map(t => t.id);
++    const opIds = completedIds.map(id => addOptimistic(id, 'DELETE', {}));
++
+     try {
+       await apiService.clearCompleted();
+-      setTasks(prev => prev.filter(t => !t.isCompleted));
++      setServerTasks(prev => prev.filter(t => !t.isCompleted));
++      opIds.forEach(id => removeOptimistic(id));
+       await updateStats();
+-    } catch (err: any) { alert(err.message); }
++    } catch (err: any) { 
++      opIds.forEach(id => removeOptimistic(id)); // Rollback
++      alert(err.message); 
++    }
++  };
++
++  // --- Search Logic ---
++  const handleAdvancedSearch = async (query: FilterQuery) => {
++    if (query.conditions.length === 0) {
++      setIsSearching(false);
++      return;
++    }
++    
++    setLoading(true);
++    try {
++      const results = await apiService.searchTasks(query);
++      setSearchResults(results);
++      setIsSearching(true);
++    } catch (e: any) {
++      alert("Search failed: " + e.message);
++    } finally {
++      setLoading(false);
++    }
+   };
+ 
+-  // --- Logic ---
+-  const processedTasks = useMemo(() => {
+-    let result = [...tasks];
+-    if (filter === 'ACTIVE') result = result.filter(t => !t.isCompleted);
+-    else if (filter === 'COMPLETED') result = result.filter(t => t.isCompleted);
++  const clearSearch = () => {
++    setIsSearching(false);
++    setSearchResults([]);
++  };
++
++  // --- View Logic ---
++  const displayedTasks = useMemo(() => {
++    let result = isSearching ? [...searchResults] : [...tasks];
++    
++    // Apply local filters only if NOT searching
++    if (!isSearching) {
++        if (filter === 'ACTIVE') result = result.filter(t => !t.isCompleted);
++        else if (filter === 'COMPLETED') result = result.filter(t => t.isCompleted);
++    }
+ 
+     result.sort((a, b) => {
+       switch (sort) {
+@@ -99,7 +293,7 @@ const App: React.FC = () => {
+       }
+     });
+     return result;
+-  }, [tasks, filter, sort]);
++  }, [tasks, searchResults, isSearching, filter, sort]);
+ 
+   return (
+     <div className="min-h-screen py-12 px-4 sm:px-6 lg:px-8 font-sans text-slate-900 relative">
+@@ -123,14 +317,30 @@ const App: React.FC = () => {
+ 
+         {/* Main List Area */}
+         <div className="bg-white/60 backdrop-blur-2xl rounded-[2.5rem] p-8 shadow-2xl shadow-indigo-100/50 border border-white">
+-          <FilterBar 
+-            currentFilter={filter}
+-            currentSort={sort}
+-            onFilterChange={setFilter}
+-            onSortChange={setSort}
+-            onClearCompleted={handleClearCompleted}
+-            hasCompleted={tasks.some(t => t.isCompleted)}
+-          />
++          
++          {showAdvancedFilters && (
++             <InlinedFilterComposer onSearch={handleAdvancedSearch} onClear={clearSearch} />
++          )}
++
++          {isSearching ? (
++             <div className="flex justify-between items-center mb-6 pb-4 border-b border-indigo-100">
++               <h3 className="text-lg font-bold text-indigo-900">
++                  Search Results <span className="text-slate-400 text-sm font-normal">({searchResults.length} matches)</span>
++               </h3>
++               <button onClick={clearSearch} className="text-xs font-bold text-red-500 hover:text-red-700">Clear Search</button>
++             </div>
++          ) : (
++             <FilterBar 
++               currentFilter={filter}
++               currentSort={sort}
++               onFilterChange={setFilter}
++               onSortChange={setSort}
++               onClearCompleted={handleClearCompleted}
++               hasCompleted={tasks.some(t => t.isCompleted)}
++               onToggleAdvanced={() => setShowAdvancedFilters(!showAdvancedFilters)}
++               isAdvancedActive={showAdvancedFilters}
++             />
++          )}
+ 
+           {error && (
+             <div className="mb-6 p-4 bg-red-50 text-red-700 rounded-2xl border border-red-100 flex items-center gap-3">
+@@ -140,11 +350,16 @@ const App: React.FC = () => {
+           )}
+ 
+           <TaskList 
+-            tasks={processedTasks}
++            tasks={displayedTasks}
+             loading={loading}
+             onToggle={handleToggleTask}
++            onToggleSubtask={handleToggleSubtask}
+             onDelete={handleDeleteTask}
++            onEdit={handleEditTask}
++            // Pass the pending check function
++            isPending={isPending}
+             emptyMessage={
++              isSearching ? "No tasks matched your detailed criteria." :
+               filter === 'ALL' ? "Your list is empty. Add a task above to get started!" 
+               : filter === 'ACTIVE' ? "You're all caught up! Great job." 
+               : "Finish some tasks to see them here."
+@@ -154,7 +369,7 @@ const App: React.FC = () => {
+ 
+         <div className="mt-12 text-center opacity-60">
+            <p className="text-[10px] text-slate-500 font-bold tracking-[0.2em] uppercase">
+-             v2.1 • LocalStorage Database • Secure
++             v2.5 • Optimistic UI • Instant Updates
+            </p>
+         </div>
+       </div>
+@@ -162,4 +377,4 @@ const App: React.FC = () => {
+   );
+ };
+ 
+-export default App;
++export default App;
+\ No newline at end of file
+diff --git a/src/client/components/TaskItem.tsx b/src/client/components/TaskItem.tsx
+index f0939e9..2543bfe 100644
+--- a/src/client/components/TaskItem.tsx
++++ b/src/client/components/TaskItem.tsx
+@@ -1,12 +1,15 @@
+-
+-import React from 'react';
++import React, { useState } from 'react';
+ import { Task, Priority } from '../../shared/types/task.types';
+ import { formatDate, formatTime } from '../../shared/utils/helpers';
++import { nanoid } from 'nanoid';
+ 
+ interface TaskItemProps {
+   task: Task;
+   onToggle: (id: string, status: boolean) => void;
++  onToggleSubtask: (taskId: string, subtaskId: string) => void;
+   onDelete: (id: string) => void;
++  onEdit: (id: string, updates: Partial<Task>) => void;
++  isPending: boolean;
+ }
+ 
+ const PriorityBadge: React.FC<{ priority: Priority }> = ({ priority }) => {
+@@ -23,17 +26,115 @@ const PriorityBadge: React.FC<{ priority: Priority }> = ({ priority }) => {
+   );
+ };
+ 
+-export const TaskItem: React.FC<TaskItemProps> = ({ task, onToggle, onDelete }) => {
++export const TaskItem: React.FC<TaskItemProps> = ({ task, onToggle, onToggleSubtask, onDelete, onEdit, isPending }) => {
++  const [isEditing, setIsEditing] = useState(false);
++  const [isAddingSubtask, setIsAddingSubtask] = useState(false);
++  const [newSubtaskText, setNewSubtaskText] = useState('');
++
++  const [editForm, setEditForm] = useState({
++    text: task.text,
++    description: task.description || '',
++    priority: task.priority
++  });
++
++  // Calculate subtask progress
++  const completedSubtasks = task.subtasks?.filter(s => s.isCompleted).length || 0;
++  const totalSubtasks = task.subtasks?.length || 0;
++  
++  const handleSave = () => {
++    if (!editForm.text.trim()) return;
++    onEdit(task.id, {
++      text: editForm.text,
++      description: editForm.description,
++      priority: editForm.priority
++    });
++    setIsEditing(false);
++  };
++
++  const handleCancel = () => {
++    setEditForm({
++      text: task.text,
++      description: task.description || '',
++      priority: task.priority
++    });
++    setIsEditing(false);
++  };
++
++  const handleAddSubtask = () => {
++    if (!newSubtaskText.trim()) return;
++    const newSubTask = {
++      id: nanoid(),
++      text: newSubtaskText,
++      isCompleted: false
++    };
++    onEdit(task.id, {
++      subtasks: [...(task.subtasks || []), newSubTask]
++    });
++    setNewSubtaskText('');
++    setIsAddingSubtask(false);
++  };
++
++  if (isEditing) {
++    return (
++      <div className="bg-white border-2 border-indigo-500/20 rounded-2xl p-4 shadow-xl shadow-indigo-100/20 relative z-20">
++        <div className="space-y-3">
++          <input
++            type="text"
++            value={editForm.text}
++            onChange={e => setEditForm({ ...editForm, text: e.target.value })}
++            className="w-full text-base font-medium text-slate-800 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
++            autoFocus
++          />
++          <textarea
++            value={editForm.description}
++            onChange={e => setEditForm({ ...editForm, description: e.target.value })}
++            placeholder="Add description..."
++            className="w-full text-sm text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 resize-none"
++            rows={2}
++          />
++          <div className="flex justify-between items-center pt-2">
++            <div className="flex gap-1 bg-slate-100 p-1 rounded-lg">
++               {Object.values(Priority).map(p => (
++                 <button
++                   key={p}
++                   onClick={() => setEditForm({ ...editForm, priority: p })}
++                   className={`px-3 py-1 text-[10px] font-bold uppercase rounded-md transition-colors ${
++                     editForm.priority === p ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'
++                   }`}
++                 >
++                   {p}
++                 </button>
++               ))}
++            </div>
++            <div className="flex gap-2">
++              <button onClick={handleCancel} className="text-xs font-bold text-slate-500 hover:bg-slate-100 px-3 py-1.5 rounded-lg">Cancel</button>
++              <button onClick={handleSave} className="text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 px-4 py-1.5 rounded-lg shadow-md shadow-indigo-200">Save</button>
++            </div>
++          </div>
++        </div>
++      </div>
++    );
++  }
++
+   return (
+     <div className={`group relative bg-white border rounded-2xl p-4 transition-all duration-300 ${
+       task.isCompleted 
+         ? 'opacity-60 border-slate-100 bg-slate-50' 
+         : 'border-slate-200/60 shadow-sm hover:shadow-lg hover:-translate-y-0.5 hover:border-indigo-200'
+-    }`}>
++    } ${isPending ? 'opacity-70 bg-slate-50/50 pointer-events-none' : ''}`}>
++      
++      {/* Loading Overlay/Spinner for Pending */}
++      {isPending && (
++          <div className="absolute top-2 right-2 z-30">
++            <div className="w-4 h-4 border-2 border-indigo-200 border-t-indigo-500 rounded-full animate-spin"></div>
++          </div>
++      )}
++
+       <div className="flex items-start gap-4">
+         {/* Checkbox */}
+         <button
+           onClick={() => onToggle(task.id, task.isCompleted)}
++          disabled={isPending}
+           className={`mt-1 flex-shrink-0 w-6 h-6 rounded-full border-[2px] flex items-center justify-center transition-all duration-300 ${
+             task.isCompleted
+               ? 'bg-gradient-to-br from-emerald-400 to-emerald-600 border-transparent text-white scale-110'
+@@ -46,23 +147,86 @@ export const TaskItem: React.FC<TaskItemProps> = ({ task, onToggle, onDelete })
+         </button>
+ 
+         {/* Content */}
+-        <div className="flex-1 min-w-0">
++        <div className="flex-1 min-w-0 pr-16">
+           <div className="flex items-center gap-2 mb-1 flex-wrap">
+-            <h4 className={`text-base font-medium truncate pr-8 transition-colors ${
++            <h4 className={`text-base font-medium truncate max-w-full transition-colors ${
+               task.isCompleted ? 'text-slate-400 line-through decoration-slate-300' : 'text-slate-800'
+             }`}>
+               {task.text}
+             </h4>
+             <PriorityBadge priority={task.priority} />
++            
++            {/* Subtask Progress Badge */}
++            {totalSubtasks > 0 && (
++              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md flex items-center gap-1 ${
++                completedSubtasks === totalSubtasks 
++                ? 'bg-emerald-100 text-emerald-700' 
++                : 'bg-slate-100 text-slate-500'
++              }`}>
++                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
++                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
++                </svg>
++                {completedSubtasks}/{totalSubtasks}
++              </span>
++            )}
+           </div>
+           
+           {task.description && (
+-            <p className={`text-sm mb-2 ${task.isCompleted ? 'text-slate-300' : 'text-slate-500'}`}>
++            <p className={`text-sm mb-2 break-words ${task.isCompleted ? 'text-slate-300' : 'text-slate-500'}`}>
+               {task.description}
+             </p>
+           )}
++
++          {/* Subtasks List */}
++          {(task.subtasks?.length > 0 || isAddingSubtask) && !task.isCompleted && (
++            <div className="mt-3 space-y-1 mb-2">
++              {task.subtasks.map(sub => (
++                <div key={sub.id} className="flex items-center gap-2 group/sub">
++                  <button 
++                    onClick={() => onToggleSubtask(task.id, sub.id)}
++                    disabled={isPending}
++                    className={`w-4 h-4 rounded border flex items-center justify-center transition-all ${
++                      sub.isCompleted 
++                      ? 'bg-indigo-500 border-indigo-500 text-white' 
++                      : 'border-slate-300 hover:border-indigo-400 bg-white'
++                    }`}
++                  >
++                    {sub.isCompleted && <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>}
++                  </button>
++                  <span className={`text-xs transition-colors ${sub.isCompleted ? 'text-slate-400 line-through' : 'text-slate-600'}`}>
++                    {sub.text}
++                  </span>
++                </div>
++              ))}
++            </div>
++          )}
+           
+-          <div className="flex items-center gap-3 text-xs text-slate-400 font-medium">
++          {/* Add Subtask Input */}
++          {isAddingSubtask ? (
++             <div className="flex items-center gap-2 mt-2">
++               <input
++                 type="text"
++                 value={newSubtaskText}
++                 onChange={(e) => setNewSubtaskText(e.target.value)}
++                 placeholder="New subtask..."
++                 className="text-xs border rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-indigo-500 w-40"
++                 autoFocus
++                 onKeyDown={(e) => e.key === 'Enter' && handleAddSubtask()}
++               />
++               <button onClick={handleAddSubtask} className="text-xs font-bold text-white bg-indigo-500 px-2 py-1 rounded-lg">Add</button>
++               <button onClick={() => setIsAddingSubtask(false)} className="text-xs text-slate-500 px-2">Cancel</button>
++             </div>
++          ) : !task.isCompleted && (
++             <button 
++               onClick={() => setIsAddingSubtask(true)}
++               disabled={isPending}
++               className="text-[10px] font-bold text-indigo-500 hover:text-indigo-700 hover:underline mt-1 flex items-center gap-1"
++             >
++               + Add subtask
++             </button>
++          )}
++
++          <div className="flex items-center gap-3 text-xs text-slate-400 font-medium mt-2">
+             <span>{formatDate(task.createdAt)}</span>
+             {task.isCompleted && task.completedAt && (
+               <span className="text-emerald-600/70 bg-emerald-50 px-1.5 py-0.5 rounded-md">
+@@ -72,16 +236,30 @@ export const TaskItem: React.FC<TaskItemProps> = ({ task, onToggle, onDelete })
+           </div>
+         </div>
+ 
+-        {/* Delete Action */}
+-        <button
+-          onClick={() => onDelete(task.id)}
+-          className="absolute top-4 right-4 text-slate-300 hover:text-red-500 p-2 rounded-xl hover:bg-red-50 transition-all opacity-0 group-hover:opacity-100 transform hover:scale-110"
+-        >
+-          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+-          </svg>
+-        </button>
++        {/* Actions */}
++        <div className="absolute top-4 right-4 flex gap-1 opacity-0 group-hover:opacity-100 transition-all duration-200 transform translate-x-2 group-hover:translate-x-0">
++          <button
++            onClick={() => setIsEditing(true)}
++            disabled={isPending}
++            className="text-slate-400 hover:text-indigo-600 p-2 rounded-xl hover:bg-indigo-50 transition-colors"
++            title="Edit"
++          >
++            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
++              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
++            </svg>
++          </button>
++          <button
++            onClick={() => onDelete(task.id)}
++            disabled={isPending}
++            className="text-slate-400 hover:text-red-500 p-2 rounded-xl hover:bg-red-50 transition-colors"
++            title="Delete"
++          >
++            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
++              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
++            </svg>
++          </button>
++        </div>
+       </div>
+     </div>
+   );
+-};
++};
+\ No newline at end of file
+diff --git a/src/client/components/TaskList.tsx b/src/client/components/TaskList.tsx
+index 38690f3..77a6cf5 100644
+--- a/src/client/components/TaskList.tsx
++++ b/src/client/components/TaskList.tsx
+@@ -1,4 +1,3 @@
+-
+ import React from 'react';
+ import { Task } from '../../shared/types/task.types';
+ import { TaskItem } from './TaskItem';
+@@ -7,11 +6,14 @@ interface TaskListProps {
+   tasks: Task[];
+   loading: boolean;
+   onToggle: (id: string, s: boolean) => void;
++  onToggleSubtask: (taskId: string, subtaskId: string) => void;
+   onDelete: (id: string) => void;
++  onEdit: (id: string, updates: Partial<Task>) => void;
++  isPending?: (id: string) => boolean;
+   emptyMessage: string;
+ }
+ 
+-export const TaskList: React.FC<TaskListProps> = ({ tasks, loading, onToggle, onDelete, emptyMessage }) => {
++export const TaskList: React.FC<TaskListProps> = ({ tasks, loading, onToggle, onToggleSubtask, onDelete, onEdit, isPending, emptyMessage }) => {
+   if (loading) {
+     return (
+       <div className="space-y-4 py-4">
+@@ -43,9 +45,12 @@ export const TaskList: React.FC<TaskListProps> = ({ tasks, loading, onToggle, on
+           key={task.id}
+           task={task}
+           onToggle={onToggle}
++          onToggleSubtask={onToggleSubtask}
+           onDelete={onDelete}
++          onEdit={onEdit}
++          isPending={isPending ? isPending(task.id) : false}
+         />
+       ))}
+     </div>
+   );
+-};
++};
+\ No newline at end of file
+diff --git a/src/client/services/apiService.ts b/src/client/services/apiService.ts
+index c53d3aa..354bc69 100644
+--- a/src/client/services/apiService.ts
++++ b/src/client/services/apiService.ts
+@@ -1,10 +1,9 @@
+-
+ // ============================================================================
+ // API SERVICE
+ // Path: src/client/services/apiService.ts
+ // ============================================================================
+ 
+-import { Task, CreateTaskDTO, UpdateTaskDTO, TaskStats, Priority } from '../../shared/types/task.types';
++import { Task, CreateTaskDTO, UpdateTaskDTO, TaskStats, Priority, FilterQuery, FilterPreset, TaskTag } from '../../shared/types/task.types';
+ import { TaskController } from '../../server/index';
+ 
+ /**
+@@ -12,27 +11,66 @@ import { TaskController } from '../../server/index';
+  */
+ export const apiService = {
+   
++  // Debug flag for testing rollback scenarios
++  _forceFailure: false,
++  
++  setForceFailure(fail: boolean) {
++    this._forceFailure = fail;
++  },
++
+   async fetchTasks(): Promise<Task[]> {
+     const response = await TaskController.getTasks();
+     if (!response.success || !response.data) throw new Error(response.error);
+     return response.data;
+   },
+ 
++  async searchTasks(query: FilterQuery): Promise<Task[]> {
++    const response = await TaskController.searchTasks(query);
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
+   async createTask(text: string, priority: Priority, description?: string): Promise<Task> {
++    if (this._forceFailure) throw new Error('Simulated API Failure');
++    
+     const payload: CreateTaskDTO = { text, priority, description };
+     const response = await TaskController.createTask(payload);
+     if (!response.success || !response.data) throw new Error(response.error);
++    
++    return response.data;
++  },
++
++  async updateTask(id: string, updates: UpdateTaskDTO): Promise<Task> {
++    if (this._forceFailure) throw new Error('Simulated API Failure');
++
++    const response = await TaskController.updateTask(id, updates);
++    if (!response.success || !response.data) throw new Error(response.error);
++    
+     return response.data;
+   },
+ 
+   async toggleTask(id: string, currentStatus: boolean): Promise<Task> {
++    if (this._forceFailure) throw new Error('Simulated API Failure');
++
+     const payload: UpdateTaskDTO = { isCompleted: !currentStatus };
+     const response = await TaskController.updateTask(id, payload);
+     if (!response.success || !response.data) throw new Error(response.error);
++    
++    return response.data;
++  },
++
++  async toggleSubtask(taskId: string, subtaskId: string): Promise<Task> {
++    if (this._forceFailure) throw new Error('Simulated API Failure');
++
++    const response = await TaskController.toggleSubtask(taskId, subtaskId);
++    if (!response.success || !response.data) throw new Error(response.error);
++    
+     return response.data;
+   },
+ 
+   async deleteTask(id: string): Promise<void> {
++    if (this._forceFailure) throw new Error('Simulated API Failure');
++
+     const response = await TaskController.deleteTask(id);
+     if (!response.success) throw new Error(response.error);
+   },
+@@ -47,5 +85,33 @@ export const apiService = {
+     const response = await TaskController.getStats();
+     if (!response.success || !response.data) throw new Error(response.error);
+     return response.data;
++  },
++
++  // --- Filter Presets ---
++
++  async getFilterPresets(): Promise<FilterPreset[]> {
++    const response = await TaskController.getFilterPresets();
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
++  async saveFilterPreset(name: string, query: FilterQuery): Promise<FilterPreset> {
++    const response = await TaskController.saveFilterPreset(name, query);
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
++  // --- Tags ---
++
++  async fetchTags(): Promise<TaskTag[]> {
++    const response = await TaskController.getTags();
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
++  },
++
++  async createTag(name: string, color: string): Promise<TaskTag> {
++    const response = await TaskController.createTag(name, color);
++    if (!response.success || !response.data) throw new Error(response.error);
++    return response.data;
+   }
+-};
++};
+\ No newline at end of file
+diff --git a/src/server/controllers/taskController.ts b/src/server/controllers/taskController.ts
+index 4028278..01ccdc4 100644
+--- a/src/server/controllers/taskController.ts
++++ b/src/server/controllers/taskController.ts
+@@ -1,10 +1,9 @@
+-
+ // ============================================================================
+ // CONTROLLER LAYER
+ // Path: src/server/controllers/taskController.ts
+ // ============================================================================
+ 
+-import { Task, ApiResponse, CreateTaskDTO, UpdateTaskDTO, TaskStats } from '../../shared/types/task.types';
++import { Task, ApiResponse, CreateTaskDTO, UpdateTaskDTO, TaskStats, FilterQuery, FilterPreset, TaskTag } from '../../shared/types/task.types';
+ import { TaskValidator } from '../validators/taskValidator';
+ import { taskService } from '../services/taskService';
+ import { delay } from '../../shared/utils/helpers';
+@@ -63,6 +62,17 @@ export const TaskController = {
+     }
+   },
+ 
++  async toggleSubtask(taskId: string, subtaskId: string): Promise<ApiResponse<Task>> {
++    await delay(150);
++    try {
++      const task = taskService.toggleSubtask(taskId, subtaskId);
++      if (!task) return this._response(false, undefined, 'Task or subtask not found', 404);
++      return this._response(true, task);
++    } catch (e) {
++      return this._response(false, undefined, 'Subtask toggle failed', 500);
++    }
++  },
++
+   async deleteTask(id: string): Promise<ApiResponse<null>> {
+     await delay(200);
+     try {
+@@ -92,5 +102,55 @@ export const TaskController = {
+     } catch (e) {
+       return this._response(false, undefined, 'Stats failed', 500);
+     }
++  },
++
++  // --- Filtering & Search ---
++
++  async searchTasks(query: FilterQuery): Promise<ApiResponse<Task[]>> {
++    await delay(200);
++    try {
++      const results = taskService.filterTasksByQuery(query);
++      return this._response(true, results);
++    } catch (e) {
++      return this._response(false, undefined, 'Search failed', 500);
++    }
++  },
++
++  async getFilterPresets(): Promise<ApiResponse<FilterPreset[]>> {
++    try {
++      const presets = taskService.getFilterPresets();
++      return this._response(true, presets);
++    } catch (e) {
++      return this._response(false, undefined, 'Failed to fetch presets', 500);
++    }
++  },
++
++  async saveFilterPreset(name: string, query: FilterQuery): Promise<ApiResponse<FilterPreset>> {
++    try {
++      const preset = taskService.saveFilterPreset(name, query);
++      return this._response(true, preset);
++    } catch (e) {
++      return this._response(false, undefined, 'Failed to save preset', 500);
++    }
++  },
++
++  // --- Tags ---
++
++  async getTags(): Promise<ApiResponse<TaskTag[]>> {
++    try {
++      const tags = await taskService.getAllTags();
++      return this._response(true, tags);
++    } catch (e) {
++      return this._response(false, undefined, 'Failed to fetch tags', 500);
++    }
++  },
++
++  async createTag(name: string, color: string): Promise<ApiResponse<TaskTag>> {
++    try {
++      const tag = await taskService.createTag(name, color);
++      return this._response(true, tag);
++    } catch (e) {
++      return this._response(false, undefined, 'Failed to create tag', 500);
++    }
+   }
+ };
+diff --git a/src/server/db/jsonDatabase.ts b/src/server/db/jsonDatabase.ts
+index 991a1a6..d963bc3 100644
+--- a/src/server/db/jsonDatabase.ts
++++ b/src/server/db/jsonDatabase.ts
+@@ -4,14 +4,36 @@
+ // Path: src/server/db/jsonDatabase.ts
+ // ============================================================================
+ 
+-import { Task, SystemLog } from '../../shared/types/task.types';
++import { Task, SystemLog, TaskTag, FilterPreset } from '../../shared/types/task.types';
+ import { DB_KEYS } from '../../shared/constants';
+ 
+ class JsonDatabase {
++  // In-memory fallback for environments without localStorage (like Node.js tests)
++  private memoryStorage: Record<string, string> = {};
++
++  // Check if we are running in a browser environment
++  private get isBrowser(): boolean {
++    return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
++  }
++
++  private getItem(key: string): string | null {
++    if (this.isBrowser) {
++      return localStorage.getItem(key);
++    }
++    return this.memoryStorage[key] || null;
++  }
++
++  private setItem(key: string, value: string): void {
++    if (this.isBrowser) {
++      localStorage.setItem(key, value);
++    } else {
++      this.memoryStorage[key] = value;
++    }
++  }
+   
+   readTasks(): Task[] {
+     try {
+-      const data = localStorage.getItem(DB_KEYS.TASKS);
++      const data = this.getItem(DB_KEYS.TASKS);
+       return data ? JSON.parse(data) : [];
+     } catch (e) {
+       console.error("[DB] Read Error", e);
+@@ -21,7 +43,7 @@ class JsonDatabase {
+ 
+   writeTasks(tasks: Task[]): void {
+     try {
+-      localStorage.setItem(DB_KEYS.TASKS, JSON.stringify(tasks));
++      this.setItem(DB_KEYS.TASKS, JSON.stringify(tasks));
+     } catch (e) {
+       console.error("[DB] Write Error", e);
+     }
+@@ -33,16 +55,64 @@ class JsonDatabase {
+       logs.push(log);
+       // Limit logs to prevent localStorage quotas
+       if (logs.length > 200) logs.shift();
+-      localStorage.setItem(DB_KEYS.LOGS, JSON.stringify(logs));
++      this.setItem(DB_KEYS.LOGS, JSON.stringify(logs));
+     } catch (e) {
+       console.error("[DB] Log Error", e);
+     }
+   }
+ 
+   readLogs(): SystemLog[] {
+-    const data = localStorage.getItem(DB_KEYS.LOGS);
+-    return data ? JSON.parse(data) : [];
++    try {
++      const data = this.getItem(DB_KEYS.LOGS);
++      return data ? JSON.parse(data) : [];
++    } catch (e) {
++       console.error("[DB] Log Read Error", e);
++       return [];
++    }
++  }
++
++  readTags(): TaskTag[] {
++    try {
++      const data = this.getItem(DB_KEYS.TAGS);
++      return data ? JSON.parse(data) : [];
++    } catch (e) {
++      return [];
++    }
++  }
++
++  writeTags(tags: TaskTag[]): void {
++    try {
++      this.setItem(DB_KEYS.TAGS, JSON.stringify(tags));
++    } catch (e) {
++      console.error("[DB] Write Tags Error", e);
++    }
++  }
++
++  readPresets(): FilterPreset[] {
++    try {
++      const data = this.getItem(DB_KEYS.PRESETS);
++      return data ? JSON.parse(data) : [];
++    } catch (e) {
++      return [];
++    }
++  }
++
++  writePresets(presets: FilterPreset[]): void {
++    try {
++      this.setItem(DB_KEYS.PRESETS, JSON.stringify(presets));
++    } catch (e) {
++      console.error("[DB] Write Presets Error", e);
++    }
++  }
++
++  readCache(): any[] {
++    try {
++      const data = this.getItem(DB_KEYS.CACHE);
++      return data ? JSON.parse(data) : [];
++    } catch (e) {
++      return [];
++    }
+   }
+ }
+ 
+-export const db = new JsonDatabase();
++export const db = new JsonDatabase();
+\ No newline at end of file
+diff --git a/src/server/services/taskService.ts b/src/server/services/taskService.ts
+index 16d21d4..9dcef32 100644
+--- a/src/server/services/taskService.ts
++++ b/src/server/services/taskService.ts
+@@ -1,11 +1,11 @@
+-
+ // ============================================================================
+ // SERVICE LAYER
+ // Path: src/server/services/taskService.ts
+ // ============================================================================
+ 
+-import { Task, CreateTaskDTO, UpdateTaskDTO, TaskStats, Priority, SystemLog } from '../../shared/types/task.types';
++import { Task, CreateTaskDTO, UpdateTaskDTO, TaskStats, Priority, SystemLog, FilterQuery, TaskTag, FilterPreset, FilterLogic, FilterOperator } from '../../shared/types/task.types';
+ import { db } from '../db/jsonDatabase';
++import { nanoid } from 'nanoid';
+ 
+ // Internal Logger Service
+ const Logger = {
+@@ -26,6 +26,71 @@ function log(level: 'INFO' | 'WARN' | 'ERROR', message: string, context?: any) {
+   if (level === 'ERROR') console.error(`[SERVER] ${message}`, context);
+ }
+ 
++// --- Embedded Filter Logic ---
++const FilterLogicImpl = {
++  executeQuery(tasks: Task[], query: FilterQuery): Task[] {
++      if (!query.conditions || query.conditions.length === 0) return tasks;
++
++      return tasks.filter(task => {
++          const results = query.conditions.map(condition => {
++              // Safe access to properties
++              const val = (task as any)[condition.field];
++              const taskValue = String(val === undefined || val === null ? '' : val);
++              const conditionValue = String(condition.value);
++              
++              switch (condition.operator) {
++                  case FilterOperator.EQUALS:
++                      return taskValue.toLowerCase() === conditionValue.toLowerCase();
++                  case FilterOperator.CONTAINS:
++                      return taskValue.toLowerCase().includes(conditionValue.toLowerCase());
++                  case FilterOperator.STARTS_WITH:
++                      return taskValue.toLowerCase().startsWith(conditionValue.toLowerCase());
++                  default:
++                      return false;
++              }
++          });
++
++          if (query.logic === FilterLogic.AND) {
++              return results.every(r => r);
++          } else {
++              return results.some(r => r);
++          }
++      });
++  },
++
++  getPresets(): FilterPreset[] {
++      return db.readPresets();
++  },
++
++  savePreset(name: string, query: FilterQuery): FilterPreset {
++      const presets = db.readPresets();
++      const newPreset = { id: nanoid(), name, query };
++      presets.push(newPreset);
++      db.writePresets(presets);
++      return newPreset;
++  }
++};
++
++// --- Embedded Tag Logic ---
++const TagLogicImpl = {
++  getAllTags(): TaskTag[] {
++    return db.readTags();
++  },
++
++  createTag(name: string, color: string): TaskTag {
++    const tags = db.readTags();
++    const newTag: TaskTag = {
++      id: nanoid(),
++      name,
++      color
++    };
++    tags.push(newTag);
++    db.writeTags(tags);
++    return newTag;
++  }
++};
++
++
+ class TaskService {
+   
+   getAll(): Task[] {
+@@ -55,6 +120,9 @@ class TaskService {
+       description: dto.description?.trim(),
+       priority: dto.priority,
+       isCompleted: false,
++      subtasks: [], 
++      tags: [],
++      reminders: [],
+       createdAt: Date.now(),
+       updatedAt: Date.now(),
+     };
+@@ -96,6 +164,29 @@ class TaskService {
+     return updatedTask;
+   }
+ 
++  toggleSubtask(taskId: string, subtaskId: string): Task | null {
++    const tasks = db.readTasks();
++    const taskIndex = tasks.findIndex(t => t.id === taskId);
++    
++    if (taskIndex === -1) return null;
++    
++    const task = tasks[taskIndex];
++    if (!task.subtasks) task.subtasks = []; 
++
++    const subtaskIndex = task.subtasks.findIndex(s => s.id === subtaskId);
++    if (subtaskIndex === -1) return null;
++
++    // Toggle status
++    task.subtasks[subtaskIndex].isCompleted = !task.subtasks[subtaskIndex].isCompleted;
++    task.updatedAt = Date.now();
++
++    tasks[taskIndex] = task;
++    db.writeTasks(tasks);
++    Logger.info('Subtask toggled', { taskId, subtaskId });
++
++    return task;
++  }
++
+   delete(id: string): boolean {
+     const tasks = db.readTasks();
+     const filtered = tasks.filter(t => t.id !== id);
+@@ -133,6 +224,111 @@ class TaskService {
+       completionRate: total > 0 ? Math.round((completed / total) * 100) : 0
+     };
+   }
++
++  // --- Tag Support ---
++
++  async addTagToTask(taskId: string, tagId: string): Promise<Task | null> {
++    const tasks = db.readTasks();
++    const taskIndex = tasks.findIndex(t => t.id === taskId);
++    if (taskIndex === -1) return null;
++
++    const tags = db.readTags();
++    const tag = tags.find(t => t.id === tagId);
++    if (!tag) return null;
++
++    const task = tasks[taskIndex];
++    if (!task.tags) task.tags = [];
++    
++    // Check duplication
++    if (!task.tags.some(t => t.id === tagId)) {
++        task.tags.push(tag);
++        task.updatedAt = Date.now();
++        tasks[taskIndex] = task;
++        db.writeTasks(tasks);
++        Logger.info('Tag added to task', { taskId, tagId });
++    }
++    return task;
++  }
++
++  async removeTagFromTask(taskId: string, tagId: string): Promise<Task | null> {
++    const tasks = db.readTasks();
++    const taskIndex = tasks.findIndex(t => t.id === taskId);
++    if (taskIndex === -1) return null;
++
++    const task = tasks[taskIndex];
++    if (!task.tags) return task;
++
++    task.tags = task.tags.filter(t => t.id !== tagId);
++    task.updatedAt = Date.now();
++    tasks[taskIndex] = task;
++    db.writeTasks(tasks);
++    Logger.info('Tag removed from task', { taskId, tagId });
++    return task;
++  }
++
++  // --- Reminder Support ---
++
++  async addReminderToTask(taskId: string, time: number, message: string): Promise<Task | null> {
++    const tasks = db.readTasks();
++    const taskIndex = tasks.findIndex(t => t.id === taskId);
++    if (taskIndex === -1) return null;
++
++    const task = tasks[taskIndex];
++    if (!task.reminders) task.reminders = [];
++
++    const reminder = {
++        id: crypto.randomUUID(),
++        time,
++        message
++    };
++    task.reminders.push(reminder);
++    task.updatedAt = Date.now();
++    
++    tasks[taskIndex] = task;
++    db.writeTasks(tasks);
++    Logger.info('Reminder added to task', { taskId, reminderId: reminder.id });
++    return task;
++  }
++
++  async removeReminderFromTask(taskId: string, reminderId: string): Promise<Task | null> {
++    const tasks = db.readTasks();
++    const taskIndex = tasks.findIndex(t => t.id === taskId);
++    if (taskIndex === -1) return null;
++
++    const task = tasks[taskIndex];
++    if (!task.reminders) return task;
++
++    task.reminders = task.reminders.filter(r => r.id !== reminderId);
++    task.updatedAt = Date.now();
++    tasks[taskIndex] = task;
++    db.writeTasks(tasks);
++    Logger.info('Reminder removed from task', { taskId, reminderId });
++    return task;
++  }
++
++  // --- Filter Support ---
++
++  filterTasksByQuery(query: FilterQuery): Task[] {
++    const tasks = this.getAll();
++    return FilterLogicImpl.executeQuery(tasks, query);
++  }
++
++  // --- Expose embedded logic for controller ---
++  getAllTags(): TaskTag[] {
++      return TagLogicImpl.getAllTags();
++  }
++  
++  createTag(name: string, color: string): TaskTag {
++      return TagLogicImpl.createTag(name, color);
++  }
++
++  getFilterPresets(): FilterPreset[] {
++      return FilterLogicImpl.getPresets();
++  }
++
++  saveFilterPreset(name: string, query: FilterQuery): FilterPreset {
++      return FilterLogicImpl.savePreset(name, query);
++  }
+ }
+ 
+ export const taskService = new TaskService();
+diff --git a/src/shared/constants.ts b/src/shared/constants.ts
+index 30fcd12..2809061 100644
+--- a/src/shared/constants.ts
++++ b/src/shared/constants.ts
+@@ -1,4 +1,3 @@
+-
+ // ============================================================================
+ // CONSTANTS
+ // Path: src/shared/constants.ts
+@@ -11,6 +10,9 @@ export const APP_VERSION = "2.1.0";
+ export const DB_KEYS = {
+   TASKS: 'simplydone_tasks_v3',
+   LOGS: 'simplydone_logs_v3',
++  TAGS: 'simplydone_tags_v3',
++  PRESETS: 'simplydone_presets_v3',
++  CACHE: 'simplydone_cache_v3',
+ };
+ 
+ // Validation Constraints
+@@ -24,4 +26,4 @@ export const PRIORITY_COLORS = {
+   HIGH: 'text-red-600 bg-red-50 border-red-200',
+   MEDIUM: 'text-amber-600 bg-amber-50 border-amber-200',
+   LOW: 'text-blue-600 bg-blue-50 border-blue-200',
+-};
++};
+\ No newline at end of file
+diff --git a/src/shared/types/task.types.ts b/src/shared/types/task.types.ts
+index 00b22be..690a679 100644
+--- a/src/shared/types/task.types.ts
++++ b/src/shared/types/task.types.ts
+@@ -23,6 +23,33 @@ export enum SortOption {
+   PRIORITY_ASC = 'PRIORITY_ASC',
+ }
+ 
++/**
++ * Subtask item structure.
++ */
++export interface SubTask {
++  id: string;
++  text: string;
++  isCompleted: boolean;
++}
++
++/**
++ * Task Tag structure.
++ */
++export interface TaskTag {
++  id: string;
++  name: string;
++  color: string;
++}
++
++/**
++ * Task Reminder structure.
++ */
++export interface TaskReminder {
++  id: string;
++  time: number;
++  message: string;
++}
++
+ /**
+  * The core Task object.
+  */
+@@ -32,6 +59,9 @@ export interface Task {
+   description?: string;
+   isCompleted: boolean;
+   priority: Priority;
++  subtasks: SubTask[];
++  tags: TaskTag[];
++  reminders: TaskReminder[];
+   createdAt: number;
+   updatedAt: number;
+   completedAt?: number;
+@@ -79,10 +109,12 @@ export interface UpdateTaskDTO {
+   isCompleted?: boolean;
+   priority?: Priority;
+   description?: string;
++  subtasks?: SubTask[];
++  tags?: TaskTag[];
+ }
+ 
+ /**
+- * Log entry for the backend logger.
++ * System Log entry structure used in server logs.
+  */
+ export interface SystemLog {
+   id: string;
+@@ -91,3 +123,47 @@ export interface SystemLog {
+   timestamp: number;
+   context?: any;
+ }
++
++/**
++ * Cache Entry Structure
++ */
++export interface CacheEntry<T> {
++  key: string;
++  value: T;
++  expiresAt: number;
++  createdAt: number;
++}
++
++// --- Filtering Types ---
++
++export enum FilterLogic {
++  AND = 'AND',
++  OR = 'OR'
++}
++
++export enum FilterOperator {
++  EQUALS = 'EQUALS',
++  CONTAINS = 'CONTAINS',
++  STARTS_WITH = 'STARTS_WITH',
++  // Additional operators can be added as needed
++}
++
++export type TaskField = keyof Task | 'priority' | 'text' | 'isCompleted';
++
++export interface FilterCondition {
++  id: string;
++  field: TaskField;
++  operator: FilterOperator;
++  value: string;
++}
++
++export interface FilterQuery {
++  logic: FilterLogic;
++  conditions: FilterCondition[];
++}
++
++export interface FilterPreset {
++  id: string;
++  name: string;
++  query: FilterQuery;
++}
